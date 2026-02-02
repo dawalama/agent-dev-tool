@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "agent-dev-tool": {
+      "command": "adt-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}
