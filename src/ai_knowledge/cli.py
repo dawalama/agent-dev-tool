@@ -495,7 +495,104 @@ def watch():
     watch_knowledge_dirs()
 
 
-# Skills subcommand group
+# Run subcommand group (unified execution)
+run_app = typer.Typer(help="Run skills or tools")
+app.add_typer(run_app, name="run")
+
+
+@run_app.command("skill")
+def run_skill(
+    name: Annotated[str, typer.Argument(help="Skill name (e.g., techdebt, review, commit)")],
+    path: Annotated[str, typer.Option("--path", "-p", help="Working directory")] = ".",
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Show progress")] = False,
+    json_output: Annotated[bool, typer.Option("--json", "-j", help="Output as JSON")] = False,
+):
+    """Execute a skill by running all its referenced tools."""
+    from .skill_executor import (
+        execute_skill,
+        format_techdebt_report,
+        format_generic_report,
+    )
+    
+    # Normalize name - remove leading / if present
+    skill_name = name.lstrip("/")
+    
+    if verbose:
+        rprint(f"[bold]Executing skill:[/bold] {skill_name}")
+        rprint(f"[bold]Path:[/bold] {path}")
+        rprint("")
+    
+    # Try to find by name or with / prefix
+    results = execute_skill(skill_name, path=path, verbose=verbose)
+    if "error" in results and "not found" in results.get("error", "").lower():
+        results = execute_skill(f"/{skill_name}", path=path, verbose=verbose)
+    
+    if "error" in results and not results.get("tools_executed"):
+        rprint(f"[red]Error:[/red] {results['error']}")
+        if "hint" in results:
+            rprint(f"[yellow]Hint:[/yellow] {results['hint']}")
+        raise typer.Exit(1)
+    
+    if json_output:
+        print(json.dumps(results, indent=2, default=str))
+    else:
+        # Use specialized formatter for known skills
+        if skill_name in ("techdebt", "Find Tech Debt"):
+            report = format_techdebt_report(results)
+        else:
+            report = format_generic_report(results)
+        
+        rprint(Panel(report, title=f"Skill: {results.get('skill', skill_name)}", border_style="green"))
+
+
+@run_app.command("tool")
+def run_tool(
+    name: Annotated[str, typer.Argument(help="Tool name (e.g., find_todos, git_status_summary)")],
+    args: Annotated[Optional[list[str]], typer.Argument(help="Arguments as key=value")] = None,
+    json_output: Annotated[bool, typer.Option("--json", "-j", help="Output as JSON")] = False,
+):
+    """Execute a tool and display results."""
+    from .tools import load_all_tools
+    
+    config = load_config()
+    registry = load_all_tools(config)
+    t = registry.get(name)
+    
+    if not t:
+        rprint(f"[red]Error:[/red] Tool not found: {name}")
+        raise typer.Exit(1)
+    
+    # Parse arguments
+    kwargs = {}
+    if args:
+        for arg in args:
+            if "=" in arg:
+                key, value = arg.split("=", 1)
+                try:
+                    kwargs[key] = json.loads(value)
+                except json.JSONDecodeError:
+                    kwargs[key] = value
+            else:
+                rprint(f"[red]Error:[/red] Invalid argument format: {arg}")
+                rprint("Use key=value format")
+                raise typer.Exit(1)
+    
+    try:
+        result = t(**kwargs)
+        
+        if json_output:
+            print(json.dumps({"result": result}, indent=2, default=str))
+        else:
+            if isinstance(result, (list, dict)):
+                rprint(Panel(json.dumps(result, indent=2, default=str), title="Result"))
+            else:
+                rprint(f"[green]Result:[/green] {result}")
+    except Exception as e:
+        rprint(f"[red]Error executing tool:[/red] {e}")
+        raise typer.Exit(1)
+
+
+# Skills subcommand group (for management: list, show, new)
 skills_app = typer.Typer(help="Manage reusable AI skills/workflows")
 app.add_typer(skills_app, name="skill")
 
@@ -615,18 +712,22 @@ def skill_show(
         ))
 
 
-@skills_app.command("run")
-def skill_run(
+@skills_app.command("prompt")
+def skill_prompt(
     name: Annotated[str, typer.Argument(help="Skill name or trigger")],
 ):
-    """Output skill prompt for LLM execution (pipe to your AI tool)."""
+    """Output skill as LLM prompt (for piping to AI tools)."""
     from .skills import load_all_skills
     
     config = load_config()
     skills = load_all_skills(config)
     
+    # Normalize name
+    skill_name = name.lstrip("/")
+    
     skill = next(
-        (s for s in skills if s.name.lower() == name.lower() or s.trigger == name),
+        (s for s in skills if s.name.lower() == skill_name.lower() 
+         or s.trigger == name or s.trigger == f"/{skill_name}"),
         None
     )
     
@@ -635,45 +736,6 @@ def skill_run(
         raise typer.Exit(1)
     
     print(skill.to_prompt())
-
-
-@skills_app.command("exec")
-def skill_exec(
-    name: Annotated[str, typer.Argument(help="Skill name or trigger")],
-    path: Annotated[str, typer.Option("--path", "-p", help="Working directory")] = ".",
-    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Show progress")] = False,
-    json_output: Annotated[bool, typer.Option("--json", "-j", help="Output as JSON")] = False,
-):
-    """Execute a skill by running all its referenced tools."""
-    from .skill_executor import (
-        execute_skill,
-        format_techdebt_report,
-        format_generic_report,
-    )
-    
-    if verbose:
-        rprint(f"[bold]Executing skill:[/bold] {name}")
-        rprint(f"[bold]Path:[/bold] {path}")
-        rprint("")
-    
-    results = execute_skill(name, path=path, verbose=verbose)
-    
-    if "error" in results and not results.get("tools_executed"):
-        rprint(f"[red]Error:[/red] {results['error']}")
-        if "hint" in results:
-            rprint(f"[yellow]Hint:[/yellow] {results['hint']}")
-        raise typer.Exit(1)
-    
-    if json_output:
-        print(json.dumps(results, indent=2, default=str))
-    else:
-        # Use specialized formatter for known skills
-        if name in ("/techdebt", "Find Tech Debt", "techdebt"):
-            report = format_techdebt_report(results)
-        else:
-            report = format_generic_report(results)
-        
-        rprint(Panel(report, title=f"Skill: {results.get('skill', name)}", border_style="green"))
 
 
 # Tools subcommand group
@@ -808,13 +870,32 @@ def tool_show(
         ))
 
 
-@tools_app.command("run")
-def tool_run(
+@tools_app.command("prompt")
+def tool_prompt(
+    name: Annotated[str, typer.Argument(help="Tool name")],
+):
+    """Output tool documentation as LLM prompt."""
+    from .tools import load_all_tools
+    
+    config = load_config()
+    registry = load_all_tools(config)
+    t = registry.get(name)
+    
+    if not t:
+        rprint(f"[red]Error:[/red] Tool not found: {name}")
+        raise typer.Exit(1)
+    
+    print(t.to_prompt())
+
+
+# Keep old tool run as hidden alias for backwards compatibility
+@tools_app.command("run", hidden=True)
+def tool_run_legacy(
     name: Annotated[str, typer.Argument(help="Tool name")],
     args: Annotated[Optional[list[str]], typer.Argument(help="Arguments as key=value")] = None,
     json_output: Annotated[bool, typer.Option("--json", "-j", help="Output as JSON")] = False,
 ):
-    """Execute a tool and display results."""
+    """[Deprecated] Use 'adt run tool <name>' instead."""
     from .tools import load_all_tools
     
     config = load_config()
