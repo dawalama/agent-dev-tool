@@ -637,6 +637,45 @@ def skill_run(
     print(skill.to_prompt())
 
 
+@skills_app.command("exec")
+def skill_exec(
+    name: Annotated[str, typer.Argument(help="Skill name or trigger")],
+    path: Annotated[str, typer.Option("--path", "-p", help="Working directory")] = ".",
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Show progress")] = False,
+    json_output: Annotated[bool, typer.Option("--json", "-j", help="Output as JSON")] = False,
+):
+    """Execute a skill by running all its referenced tools."""
+    from .skill_executor import (
+        execute_skill,
+        format_techdebt_report,
+        format_generic_report,
+    )
+    
+    if verbose:
+        rprint(f"[bold]Executing skill:[/bold] {name}")
+        rprint(f"[bold]Path:[/bold] {path}")
+        rprint("")
+    
+    results = execute_skill(name, path=path, verbose=verbose)
+    
+    if "error" in results and not results.get("tools_executed"):
+        rprint(f"[red]Error:[/red] {results['error']}")
+        if "hint" in results:
+            rprint(f"[yellow]Hint:[/yellow] {results['hint']}")
+        raise typer.Exit(1)
+    
+    if json_output:
+        print(json.dumps(results, indent=2, default=str))
+    else:
+        # Use specialized formatter for known skills
+        if name in ("/techdebt", "Find Tech Debt", "techdebt"):
+            report = format_techdebt_report(results)
+        else:
+            report = format_generic_report(results)
+        
+        rprint(Panel(report, title=f"Skill: {results.get('skill', name)}", border_style="green"))
+
+
 # Tools subcommand group
 tools_app = typer.Typer(help="Manage reusable code tools/functions")
 app.add_typer(tools_app, name="tool")
