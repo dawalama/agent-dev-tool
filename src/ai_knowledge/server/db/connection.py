@@ -115,6 +115,25 @@ def init_databases():
             CREATE INDEX IF NOT EXISTS idx_tasks_priority_status ON tasks(priority, status);
             CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at);
         """)
+        
+        # Migration: add new columns if they don't exist
+        cursor = conn.execute("PRAGMA table_info(tasks)")
+        columns = {row[1] for row in cursor.fetchall()}
+        
+        migrations = [
+            ("depends_on", "JSON"),
+            ("output", "TEXT"),
+            ("output_artifacts", "JSON"),
+            ("next_tasks", "JSON"),
+            ("requires_review", "BOOLEAN DEFAULT 0"),
+            ("review_prompt", "TEXT"),
+            ("reviewed_by", "TEXT"),
+            ("reviewed_at", "TIMESTAMP"),
+        ]
+        
+        for col_name, col_type in migrations:
+            if col_name not in columns:
+                conn.execute(f"ALTER TABLE tasks ADD COLUMN {col_name} {col_type}")
     
     # Logs database - events and agent runs
     with manager.transaction("logs") as conn:

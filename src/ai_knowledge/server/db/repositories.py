@@ -353,25 +353,27 @@ class TaskRepository:
         return stats
     
     def _row_to_task(self, row) -> Task:
+        # Convert row to dict for safe access
+        row_dict = dict(row)
         return Task(
-            id=row["id"],
-            project=row["project"],
-            description=row["description"],
-            priority=TaskPriority(row["priority"]),
-            status=TaskStatus(row["status"]),
-            assigned_to=row["assigned_to"],
-            created_at=datetime.fromisoformat(row["created_at"]),
-            started_at=datetime.fromisoformat(row["started_at"]) if row["started_at"] else None,
-            completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
-            result=row["result"],
-            error=row["error"],
-            retry_count=row["retry_count"],
-            max_retries=row["max_retries"],
-            metadata=json.loads(row["metadata"]) if row["metadata"] else None,
-            depends_on=json.loads(row["depends_on"]) if row.get("depends_on") else None,
-            output=row.get("output"),
-            output_artifacts=json.loads(row["output_artifacts"]) if row.get("output_artifacts") else None,
-            next_tasks=json.loads(row["next_tasks"]) if row.get("next_tasks") else None,
+            id=row_dict["id"],
+            project=row_dict["project"],
+            description=row_dict["description"],
+            priority=TaskPriority(row_dict["priority"]),
+            status=TaskStatus(row_dict["status"]),
+            assigned_to=row_dict.get("assigned_to"),
+            created_at=datetime.fromisoformat(row_dict["created_at"]),
+            started_at=datetime.fromisoformat(row_dict["started_at"]) if row_dict.get("started_at") else None,
+            completed_at=datetime.fromisoformat(row_dict["completed_at"]) if row_dict.get("completed_at") else None,
+            result=row_dict.get("result"),
+            error=row_dict.get("error"),
+            retry_count=row_dict.get("retry_count", 0),
+            max_retries=row_dict.get("max_retries", 3),
+            metadata=json.loads(row_dict["metadata"]) if row_dict.get("metadata") else None,
+            depends_on=json.loads(row_dict["depends_on"]) if row_dict.get("depends_on") else None,
+            output=row_dict.get("output"),
+            output_artifacts=json.loads(row_dict["output_artifacts"]) if row_dict.get("output_artifacts") else None,
+            next_tasks=json.loads(row_dict["next_tasks"]) if row_dict.get("next_tasks") else None,
         )
 
 
