@@ -310,16 +310,34 @@ class ProcessManager:
         # Mark as intentionally stopping so monitor doesn't mark as failed
         self._stopping.add(process_id)
         
+        sig = signal.SIGKILL if force else signal.SIGTERM
+        killed = False
+        
+        # Try to kill via subprocess reference first
         process = self._subprocesses.get(process_id)
         if process:
             try:
                 # Kill the entire process group
-                sig = signal.SIGKILL if force else signal.SIGTERM
                 os.killpg(os.getpgid(process.pid), sig)
+                killed = True
             except ProcessLookupError:
                 pass
             except Exception as e:
                 state.error = str(e)
+        
+        # If we have a PID stored, try killing that too
+        if state.pid and not killed:
+            try:
+                os.killpg(os.getpgid(state.pid), sig)
+                killed = True
+            except ProcessLookupError:
+                pass
+            except Exception:
+                pass
+        
+        # Last resort: find and kill any process using our port
+        if state.port and not killed:
+            self._kill_port_process(state.port, sig)
         
         state.status = ProcessStatus.STOPPED
         state.pid = None
@@ -329,6 +347,27 @@ class ProcessManager:
         self._emit("stopped", process_id, state)
         
         return state
+    
+    def _kill_port_process(self, port: int, sig: int = signal.SIGTERM):
+        """Find and kill any process using the given port."""
+        import subprocess as sp
+        try:
+            # Use lsof to find PIDs using this port
+            result = sp.run(
+                ["lsof", "-t", "-i", f":{port}"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.stdout.strip():
+                for pid_str in result.stdout.strip().split('\n'):
+                    try:
+                        pid = int(pid_str.strip())
+                        os.kill(pid, sig)
+                    except (ValueError, ProcessLookupError):
+                        pass
+        except Exception:
+            pass
     
     def restart(self, process_id: str) -> ProcessState:
         """Restart a process."""
