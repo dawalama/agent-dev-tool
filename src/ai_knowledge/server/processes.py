@@ -142,6 +142,7 @@ class ProcessManager:
         self._subprocesses: dict[str, subprocess.Popen] = {}
         self._log_files: dict[str, object] = {}
         self._callbacks: dict[str, list[Callable]] = {}
+        self._stopping: set[str] = set()  # Processes being intentionally stopped
         
         # Load existing process states
         self._load_states()
@@ -304,6 +305,9 @@ class ProcessManager:
         if state.status != ProcessStatus.RUNNING:
             return state
         
+        # Mark as intentionally stopping so monitor doesn't mark as failed
+        self._stopping.add(process_id)
+        
         process = self._subprocesses.get(process_id)
         if process:
             try:
@@ -317,6 +321,7 @@ class ProcessManager:
         
         state.status = ProcessStatus.STOPPED
         state.pid = None
+        state.error = None  # Clear any previous error
         state.save()
         
         self._emit("stopped", process_id, state)
@@ -332,6 +337,10 @@ class ProcessManager:
         """Monitor a process and update state when it exits."""
         exit_code = process.wait()
         
+        # Check if this was an intentional stop
+        was_intentional_stop = process_id in self._stopping
+        self._stopping.discard(process_id)
+        
         # Close log file
         if process_id in self._log_files:
             try:
@@ -346,17 +355,23 @@ class ProcessManager:
         if process_id in self._subprocesses:
             del self._subprocesses[process_id]
         
-        # Extract error message if failed
+        # Extract error message if failed (and not intentionally stopped)
         error_msg = None
-        if exit_code != 0:
+        if exit_code != 0 and not was_intentional_stop:
             error_msg = self._extract_error(process_id)
         
         # Update state
         state = self._processes.get(process_id)
         if state:
-            state.status = ProcessStatus.FAILED if exit_code != 0 else ProcessStatus.STOPPED
+            # If intentionally stopped, mark as stopped regardless of exit code
+            if was_intentional_stop:
+                state.status = ProcessStatus.STOPPED
+                state.error = None
+            else:
+                state.status = ProcessStatus.FAILED if exit_code != 0 else ProcessStatus.STOPPED
+                state.error = error_msg
+            
             state.exit_code = exit_code
-            state.error = error_msg
             state.pid = None
             state.save()
             
