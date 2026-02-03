@@ -84,6 +84,21 @@ def init_databases():
                 preferred_worktree TEXT,
                 config JSON
             );
+            
+            CREATE TABLE IF NOT EXISTS process_configs (
+                id TEXT PRIMARY KEY,
+                project TEXT NOT NULL,
+                name TEXT NOT NULL,
+                command TEXT NOT NULL,
+                cwd TEXT,
+                port INTEGER,
+                description TEXT,
+                discovered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                discovered_by TEXT DEFAULT 'llm',
+                UNIQUE(project, name)
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_process_configs_project ON process_configs(project);
         """)
     
     # Tasks database - queue and history

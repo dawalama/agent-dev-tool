@@ -139,6 +139,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
                             <div class="flex gap-2">
                                 <button onclick="showPortsModal()" class="text-xs bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded">Ports</button>
                                 <button onclick="detectProcesses()" class="text-xs bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded">Auto-detect</button>
+                                <button onclick="detectProcesses(true)" class="text-xs bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded" title="Force re-scan with LLM">Re-scan</button>
                             </div>
                         </div>
                         <div id="processes-list" class="space-y-2">
@@ -697,16 +698,18 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             }
         }
 
-        async function detectProcesses() {
+        async function detectProcesses(forceRediscover = false) {
             const project = currentProject === 'all' ? null : currentProject;
             if (!project) {
                 showNotification('Select a project first');
                 return;
             }
             
-            const result = await api(`/projects/${project}/detect-processes`, { method: 'POST' });
+            const url = `/projects/${project}/detect-processes${forceRediscover ? '?force_rediscover=true' : ''}`;
+            const result = await api(url, { method: 'POST' });
             if (result?.success) {
-                showNotification(`Detected ${result.detected.length} process(es)`);
+                const source = result.method === 'cache' ? ' (cached)' : result.method === 'llm' ? ' (LLM)' : '';
+                showNotification(`Detected ${result.detected.length} process(es)${source}`);
                 loadProcesses(true);
             }
         }

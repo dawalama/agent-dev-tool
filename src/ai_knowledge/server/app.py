@@ -1139,15 +1139,16 @@ Recent logs:
 
 
 @app.post("/projects/{project}/detect-processes")
-async def detect_project_processes(project: str, use_llm: bool = True):
+async def detect_project_processes(project: str, use_llm: bool = True, force_rediscover: bool = False):
     """Auto-detect and register dev processes for a project.
     
-    Uses LLM (Ollama) to intelligently discover all runnable processes
-    from package.json, pyproject.toml, etc.
+    Uses cached discovery if available, or LLM (Ollama) for fresh discovery.
+    Set force_rediscover=True to bypass cache and re-run LLM.
     """
     from ..store import load_config as load_adt_config
-    from .process_discovery import discover_processes
+    from .process_discovery import discover_processes, DiscoveredProcess
     from .ports import get_port_manager
+    from .db.connection import get_db
     
     adt_config = load_adt_config()
     proj = next((p for p in adt_config.projects if p.name == project), None)
@@ -1157,8 +1158,52 @@ async def detect_project_processes(project: str, use_llm: bool = True):
     project_path = str(proj.path)
     port_manager = get_port_manager()
     
-    # Discover processes using LLM or heuristics
-    discovered = discover_processes(project, project_path, use_llm=use_llm)
+    # Check DB cache first (unless forcing rediscovery)
+    discovered = []
+    from_cache = False
+    
+    if not force_rediscover:
+        db = get_db("main")
+        cursor = db.execute(
+            "SELECT name, command, cwd, port, description FROM process_configs WHERE project = ?",
+            (project,)
+        )
+        rows = cursor.fetchall()
+        if rows:
+            discovered = [
+                DiscoveredProcess(
+                    name=row["name"],
+                    command=row["command"],
+                    description=row["description"] or "",
+                    default_port=row["port"],
+                    cwd=row["cwd"],
+                )
+                for row in rows
+            ]
+            from_cache = True
+    
+    # If no cache, discover using LLM or heuristics
+    if not discovered:
+        discovered = discover_processes(project, project_path, use_llm=use_llm)
+        
+        # Save to DB cache
+        if discovered:
+            db = get_db("main")
+            for proc in discovered:
+                db.execute("""
+                    INSERT OR REPLACE INTO process_configs (id, project, name, command, cwd, port, description, discovered_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    f"{project}-{proc.name}",
+                    project,
+                    proc.name,
+                    proc.command,
+                    proc.cwd,
+                    proc.default_port,
+                    proc.description,
+                    "llm" if use_llm else "heuristics",
+                ))
+            db.commit()
     
     registered = []
     for proc in discovered:
@@ -1197,7 +1242,7 @@ async def detect_project_processes(project: str, use_llm: bool = True):
     return {
         "success": True,
         "detected": registered,
-        "method": "llm" if use_llm and registered else "heuristics",
+        "method": "cache" if from_cache else ("llm" if use_llm else "heuristics"),
     }
 
 
