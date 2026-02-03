@@ -565,8 +565,10 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             container.innerHTML = allProcesses.map(p => {
                 const isRunning = p.status === 'running';
                 const isFailed = p.status === 'failed';
-                const statusColor = isRunning ? 'text-green-400' : isFailed ? 'text-red-400' : 'text-gray-400';
+                const isIdle = p.status === 'idle';
+                const statusColor = isRunning ? 'text-green-400' : isFailed ? 'text-red-400' : isIdle ? 'text-blue-400' : 'text-gray-400';
                 const borderClass = isFailed ? 'border border-red-500' : '';
+                const statusText = isIdle ? 'ready' : p.status;
                 
                 return `
                     <div class="bg-gray-700 rounded p-2 ${borderClass}">
@@ -575,9 +577,9 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
                                 <span class="font-medium text-sm">${p.project}/${p.name}</span>
                                 ${p.port ? `<span class="text-blue-400 text-xs ml-2">:${p.port}</span>` : ''}
                             </div>
-                            <span class="${statusColor} text-xs">${p.status}${p.pid ? ` (${p.pid})` : ''}</span>
+                            <span class="${statusColor} text-xs">${statusText}${p.pid ? ` (${p.pid})` : ''}</span>
                         </div>
-                        <div class="text-gray-400 text-xs truncate mt-1">${p.command}</div>
+                        <div class="text-gray-400 text-xs truncate mt-1" title="${p.command}">${p.command}</div>
                         ${isFailed && p.error ? `<div class="text-red-400 text-xs mt-1 truncate" title="${p.error}">${p.error.split('\\n')[0]}</div>` : ''}
                         <div class="flex gap-2 mt-2 flex-wrap">
                             ${isRunning ? `

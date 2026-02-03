@@ -24,9 +24,10 @@ class ProcessType(str, Enum):
 
 class ProcessStatus(str, Enum):
     RUNNING = "running"
-    STOPPED = "stopped"
-    FAILED = "failed"
+    STOPPED = "stopped"  # Was running, now stopped
+    FAILED = "failed"    # Crashed unexpectedly
     STARTING = "starting"
+    IDLE = "idle"        # Registered but never started
 
 
 class ProcessState(BaseModel):
@@ -37,12 +38,13 @@ class ProcessState(BaseModel):
     process_type: ProcessType = ProcessType.DEV_SERVER
     command: str
     cwd: str
-    status: ProcessStatus = ProcessStatus.STOPPED
+    status: ProcessStatus = ProcessStatus.IDLE  # Start as idle, not stopped
     pid: Optional[int] = None
     port: Optional[int] = None
     started_at: Optional[datetime] = None
     exit_code: Optional[int] = None
     error: Optional[str] = None
+    description: Optional[str] = None  # What this process does
     
     def state_path(self) -> Path:
         return get_adt_home() / "processes" / f"{self.id}.state.json"

@@ -1139,28 +1139,65 @@ Recent logs:
 
 
 @app.post("/projects/{project}/detect-processes")
-async def detect_project_processes(project: str):
-    """Auto-detect and register dev processes for a project."""
+async def detect_project_processes(project: str, use_llm: bool = True):
+    """Auto-detect and register dev processes for a project.
+    
+    Uses LLM (Ollama) to intelligently discover all runnable processes
+    from package.json, pyproject.toml, etc.
+    """
     from ..store import load_config as load_adt_config
+    from .process_discovery import discover_processes
+    from .ports import get_port_manager
     
     adt_config = load_adt_config()
     proj = next((p for p in adt_config.projects if p.name == project), None)
     if not proj:
         raise HTTPException(status_code=404, detail=f"Project not found: {project}")
     
-    detected = process_manager.auto_detect(project, str(proj.path))
+    project_path = str(proj.path)
+    port_manager = get_port_manager()
+    
+    # Discover processes using LLM or heuristics
+    discovered = discover_processes(project, project_path, use_llm=use_llm)
+    
+    registered = []
+    for proc in discovered:
+        # Determine the working directory
+        if proc.cwd:
+            cwd = str(Path(project_path) / proc.cwd)
+        else:
+            cwd = project_path
+        
+        # Assign port if this is a server
+        port = None
+        if proc.default_port:
+            port = port_manager.assign_port(project, proc.name, preferred=proc.default_port)
+            # Adjust command with assigned port
+            cmd = process_manager._adjust_command_port(proc.command, port)
+        else:
+            cmd = proc.command
+        
+        # Register the process
+        state = process_manager.register(
+            project=project,
+            name=proc.name,
+            command=cmd,
+            cwd=cwd,
+            port=port,
+            force_update=True,
+        )
+        registered.append({
+            "id": state.id,
+            "name": proc.name,
+            "command": cmd,
+            "port": port,
+            "description": proc.description,
+        })
     
     return {
         "success": True,
-        "detected": [
-            {
-                "id": p.id,
-                "name": p.name,
-                "command": p.command,
-                "port": p.port,
-            }
-            for p in detected
-        ],
+        "detected": registered,
+        "method": "llm" if use_llm and registered else "heuristics",
     }
 
 
