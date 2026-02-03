@@ -32,10 +32,16 @@ class Orchestrator:
         self._running = False
         self._task: Optional[asyncio.Task] = None
         
+        # Track task <-> agent mapping
+        self._agent_tasks: dict[str, str] = {}  # project -> task_id
+        
         # Config
         self.poll_interval = 5  # seconds
         self.max_concurrent = config.agents.max_concurrent
         self.stuck_timeout = config.agents.escalation.stuck_timeout
+        
+        # Register for agent events
+        self.agent_manager.on("task_complete", self._on_agent_complete)
     
     async def start(self):
         """Start the orchestration loop."""
@@ -185,6 +191,9 @@ class Orchestrator:
                 busy_projects.add(task.project)
                 running.append(state)
                 
+                # Track the task for this agent
+                self._agent_tasks[task.project] = task.id
+                
             except Exception as e:
                 logger.error(f"Failed to spawn agent for {task.project}: {e}")
                 
@@ -198,6 +207,33 @@ class Orchestrator:
                     message=str(e),
                     level="error",
                 )
+    
+    def _on_agent_complete(self, project: str, exit_code: int, output: str) -> None:
+        """Handle agent task completion."""
+        task_id = self._agent_tasks.pop(project, None)
+        
+        if not task_id:
+            return
+        
+        if exit_code == 0:
+            # Task completed successfully
+            self.task_repo.complete(task_id, output=output)
+            self.event_repo.log(
+                "task.completed",
+                project=project,
+                task_id=task_id,
+                message=f"Task completed with output: {len(output)} chars",
+            )
+        else:
+            # Task failed
+            self.task_repo.fail(task_id, f"Agent exited with code {exit_code}")
+            self.event_repo.log(
+                "task.failed",
+                project=project,
+                task_id=task_id,
+                message=f"Agent exited with code {exit_code}",
+                level="error",
+            )
     
     def get_stats(self) -> dict:
         """Get orchestrator statistics."""

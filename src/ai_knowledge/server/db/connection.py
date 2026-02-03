@@ -103,7 +103,11 @@ def init_databases():
                 error TEXT,
                 retry_count INTEGER DEFAULT 0,
                 max_retries INTEGER DEFAULT 3,
-                metadata JSON
+                metadata JSON,
+                depends_on JSON,
+                output TEXT,
+                output_artifacts JSON,
+                next_tasks JSON
             );
             
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);

@@ -258,6 +258,9 @@ class AgentManager:
                 pass
             del self._log_files[project]
         
+        # Capture output from log file
+        output = self._capture_output(project)
+        
         # Update state
         state = self._agents.get(project)
         if state:
@@ -272,9 +275,43 @@ class AgentManager:
             state.pid = None
             state.save()
             self._emit("status_change", project, state)
+            self._emit("task_complete", project, exit_code, output)
             
             if exit_code != 0:
                 self._emit("error", project, state.error)
+    
+    def _capture_output(self, project: str) -> str:
+        """Capture the meaningful output from an agent run."""
+        log_path = get_adt_home() / "logs" / "agents" / f"{project}.log"
+        if not log_path.exists():
+            return ""
+        
+        try:
+            content = log_path.read_text()
+            lines = content.split("\n")
+            
+            # Find the last run's output (between === markers)
+            output_lines = []
+            in_output = False
+            
+            for line in reversed(lines):
+                if line.startswith("=== Agent exited"):
+                    in_output = True
+                    continue
+                if line.startswith("=== Agent started") or line.startswith("=" * 50):
+                    if in_output:
+                        break
+                    continue
+                if in_output:
+                    output_lines.append(line)
+            
+            output_lines.reverse()
+            output = "\n".join(output_lines).strip()
+            
+            # Scrub secrets
+            return scrub_log_content(output)
+        except Exception:
+            return ""
     
     def _get_exit_error(self, project: str, exit_code: int) -> str:
         """Extract error message from agent logs."""

@@ -83,6 +83,12 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
 
             <!-- Task Queue Panel -->
             <div class="col-span-1">
+                <!-- Pending Reviews -->
+                <div id="review-panel" class="bg-yellow-900 rounded-lg p-4 mb-4 hidden">
+                    <h2 class="text-lg font-semibold mb-2">Pending Review</h2>
+                    <div id="review-list" class="space-y-2"></div>
+                </div>
+                
                 <div class="bg-gray-800 rounded-lg p-4">
                     <div class="flex justify-between items-center mb-4">
                         <h2 class="text-lg font-semibold">Task Queue</h2>
@@ -90,7 +96,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
                             + Add Task
                         </button>
                     </div>
-                    <div id="tasks-list" class="space-y-2 max-h-96 overflow-y-auto">
+                    <div id="tasks-list" class="space-y-2 max-h-80 overflow-y-auto">
                         <div class="text-gray-500 text-sm">Loading...</div>
                     </div>
                 </div>
@@ -111,13 +117,18 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
                 <!-- Agent Logs -->
                 <div class="bg-gray-800 rounded-lg p-4 mt-4">
                     <div class="flex justify-between items-center mb-4">
-                        <h2 class="text-lg font-semibold">Agent Logs</h2>
-                        <select id="log-agent-select" onchange="loadAgentLogs()" class="bg-gray-700 rounded px-2 py-1 text-sm">
-                            <option value="">Select agent...</option>
-                        </select>
+                        <h2 class="text-lg font-semibold">Agent Output</h2>
+                        <div class="flex items-center gap-2">
+                            <select id="log-agent-select" onchange="selectAgent()" class="bg-gray-700 rounded px-2 py-1 text-sm">
+                                <option value="">Select agent...</option>
+                            </select>
+                            <button id="live-toggle" onclick="toggleLive()" class="text-xs bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded hidden">
+                                ● Live
+                            </button>
+                        </div>
                     </div>
-                    <div id="agent-logs" class="max-h-48 overflow-y-auto log-container bg-gray-900 p-2 rounded">
-                        <div class="text-gray-500 text-sm">Select an agent to view logs</div>
+                    <div id="agent-logs" class="max-h-64 overflow-y-auto log-container bg-gray-900 p-2 rounded">
+                        <div class="text-gray-500 text-sm">Select an agent to view output</div>
                     </div>
                 </div>
             </div>
@@ -320,8 +331,29 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-                handleEvent(data);
+                
+                // Handle agent output streaming
+                if (data.type === 'agent.output' && data.project === currentLogProject) {
+                    appendAgentOutput(data.content);
+                } else {
+                    handleEvent(data);
+                }
             };
+        }
+
+        function appendAgentOutput(content) {
+            const logsDiv = document.getElementById('agent-logs');
+            
+            // Remove placeholder if present
+            if (logsDiv.querySelector('.text-gray-500')) {
+                logsDiv.innerHTML = '<pre class="text-xs text-gray-300 whitespace-pre-wrap"></pre>';
+            }
+            
+            const pre = logsDiv.querySelector('pre');
+            if (pre) {
+                pre.textContent += content;
+                logsDiv.scrollTop = logsDiv.scrollHeight;
+            }
         }
 
         function handleEvent(event) {
@@ -443,8 +475,63 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             document.getElementById('agents-list').innerHTML = agentsHtml;
         }
 
+        async function loadPendingReviews() {
+            try {
+                const reviews = await api('/tasks/pending-review');
+                const panel = document.getElementById('review-panel');
+                const list = document.getElementById('review-list');
+                
+                if (reviews.length === 0) {
+                    panel.classList.add('hidden');
+                    return;
+                }
+                
+                panel.classList.remove('hidden');
+                list.innerHTML = reviews.map(t => `
+                    <div class="bg-yellow-800 rounded p-2">
+                        <div class="text-sm font-medium">${t.project}</div>
+                        <div class="text-xs text-yellow-200 mt-1">${t.review_prompt || t.description}</div>
+                        <div class="flex gap-2 mt-2">
+                            <button onclick="approveTask('${t.id}')" class="text-xs bg-green-600 hover:bg-green-700 px-2 py-1 rounded">Approve</button>
+                            <button onclick="rejectTask('${t.id}')" class="text-xs bg-red-600 hover:bg-red-700 px-2 py-1 rounded">Reject</button>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (e) {
+                // Ignore errors
+            }
+        }
+
+        async function approveTask(taskId) {
+            const result = await api(`/tasks/${taskId}/review`, {
+                method: 'POST',
+                body: JSON.stringify({ approved: true }),
+            });
+            if (result.success) {
+                showNotification('Task approved');
+                loadPendingReviews();
+                loadTasks();
+            }
+        }
+
+        async function rejectTask(taskId) {
+            const comment = prompt('Reason for rejection (optional):');
+            const result = await api(`/tasks/${taskId}/review`, {
+                method: 'POST',
+                body: JSON.stringify({ approved: false, comment }),
+            });
+            if (result.success) {
+                showNotification('Task rejected');
+                loadPendingReviews();
+                loadTasks();
+            }
+        }
+
         async function loadTasks() {
             const tasks = await api('/tasks');
+            
+            // Also load pending reviews
+            loadPendingReviews();
             
             if (tasks.length === 0) {
                 document.getElementById('tasks-list').innerHTML = '<div class="text-gray-500 text-sm">No pending tasks</div>';
@@ -567,7 +654,55 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
 
         function viewLogs(project) {
             document.getElementById('log-agent-select').value = project;
-            loadAgentLogs();
+            selectAgent();
+        }
+
+        let currentLogProject = null;
+        let isLiveStreaming = false;
+
+        function selectAgent() {
+            const project = document.getElementById('log-agent-select').value;
+            const liveBtn = document.getElementById('live-toggle');
+            
+            // Unsubscribe from previous
+            if (currentLogProject && isLiveStreaming) {
+                ws.send(JSON.stringify({ command: 'unsubscribe', project: currentLogProject }));
+            }
+            
+            currentLogProject = project;
+            isLiveStreaming = false;
+            liveBtn.classList.add('hidden');
+            liveBtn.classList.remove('bg-green-600');
+            liveBtn.classList.add('bg-gray-600');
+            
+            if (project) {
+                loadAgentLogs();
+                liveBtn.classList.remove('hidden');
+            } else {
+                document.getElementById('agent-logs').innerHTML = '<div class="text-gray-500 text-sm">Select an agent to view output</div>';
+            }
+        }
+
+        function toggleLive() {
+            const liveBtn = document.getElementById('live-toggle');
+            
+            if (!currentLogProject) return;
+            
+            if (isLiveStreaming) {
+                // Stop live streaming
+                ws.send(JSON.stringify({ command: 'unsubscribe', project: currentLogProject }));
+                isLiveStreaming = false;
+                liveBtn.classList.remove('bg-green-600');
+                liveBtn.classList.add('bg-gray-600');
+                liveBtn.textContent = '○ Live';
+            } else {
+                // Start live streaming
+                ws.send(JSON.stringify({ command: 'subscribe', project: currentLogProject }));
+                isLiveStreaming = true;
+                liveBtn.classList.add('bg-green-600');
+                liveBtn.classList.remove('bg-gray-600');
+                liveBtn.textContent = '● Live';
+            }
         }
 
         async function executeCommand() {

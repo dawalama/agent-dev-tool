@@ -14,6 +14,7 @@ class TaskStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     BLOCKED = "blocked"
+    AWAITING_REVIEW = "awaiting_review"  # Needs human approval
 
 
 class TaskPriority(str, Enum):
@@ -51,6 +52,18 @@ class Task(BaseModel):
     retry_count: int = 0
     max_retries: int = 3
     metadata: Optional[dict[str, Any]] = None
+    
+    # Task chaining
+    depends_on: Optional[list[str]] = None  # Task IDs this depends on
+    output: Optional[str] = None  # Captured output from agent
+    output_artifacts: Optional[list[str]] = None  # File paths created
+    next_tasks: Optional[list[str]] = None  # Tasks to trigger on completion
+    
+    # Review mode
+    requires_review: bool = False  # If true, task pauses for approval before running
+    review_prompt: Optional[str] = None  # What to show the reviewer
+    reviewed_by: Optional[str] = None  # Who approved/rejected
+    reviewed_at: Optional[datetime] = None
 
 
 class AgentRunStatus(str, Enum):

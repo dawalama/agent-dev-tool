@@ -99,19 +99,34 @@ class TaskRepository:
         description: str,
         priority: TaskPriority = TaskPriority.NORMAL,
         metadata: Optional[dict] = None,
+        depends_on: Optional[list[str]] = None,
+        next_tasks: Optional[list[str]] = None,
     ) -> Task:
         """Create a new task."""
+        # Check if blocked by dependencies
+        initial_status = TaskStatus.PENDING
+        if depends_on:
+            # Check if all dependencies are completed
+            for dep_id in depends_on:
+                dep = self.get(dep_id)
+                if not dep or dep.status != TaskStatus.COMPLETED:
+                    initial_status = TaskStatus.BLOCKED
+                    break
+        
         task = Task(
             id=secrets.token_hex(4),
             project=project,
             description=description,
             priority=priority,
+            status=initial_status,
             metadata=metadata,
+            depends_on=depends_on,
+            next_tasks=next_tasks,
         )
         
         self.db.execute("""
-            INSERT INTO tasks (id, project, description, priority, status, created_at, metadata)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tasks (id, project, description, priority, status, created_at, metadata, depends_on, next_tasks)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             task.id,
             task.project,
@@ -120,6 +135,8 @@ class TaskRepository:
             task.status.value,
             task.created_at.isoformat(),
             json.dumps(task.metadata) if task.metadata else None,
+            json.dumps(task.depends_on) if task.depends_on else None,
+            json.dumps(task.next_tasks) if task.next_tasks else None,
         ))
         self.db.commit()
         return task
@@ -201,22 +218,74 @@ class TaskRepository:
             return None
         return self._row_to_task(row)
     
-    def complete(self, task_id: str, result: Optional[str] = None) -> Optional[Task]:
-        """Mark a task as completed."""
+    def complete(
+        self, 
+        task_id: str, 
+        result: Optional[str] = None,
+        output: Optional[str] = None,
+        output_artifacts: Optional[list[str]] = None,
+    ) -> Optional[Task]:
+        """Mark a task as completed and unblock dependent tasks."""
         now = datetime.now().isoformat()
         cursor = self.db.execute("""
             UPDATE tasks 
-            SET status = 'completed', completed_at = ?, result = ?
+            SET status = 'completed', completed_at = ?, result = ?, output = ?, output_artifacts = ?
             WHERE id = ?
             RETURNING *
-        """, (now, result, task_id))
+        """, (
+            now, 
+            result, 
+            output,
+            json.dumps(output_artifacts) if output_artifacts else None,
+            task_id
+        ))
         
         row = cursor.fetchone()
         self.db.commit()
         
         if not row:
             return None
-        return self._row_to_task(row)
+        
+        completed_task = self._row_to_task(row)
+        
+        # Unblock tasks that depend on this one
+        self._unblock_dependents(task_id)
+        
+        return completed_task
+    
+    def _unblock_dependents(self, completed_task_id: str) -> None:
+        """Check and unblock tasks that were waiting on this task."""
+        # Find tasks that depend on the completed task
+        cursor = self.db.execute("""
+            SELECT * FROM tasks WHERE status = 'blocked'
+        """)
+        
+        for row in cursor.fetchall():
+            depends_on = json.loads(row["depends_on"]) if row["depends_on"] else []
+            
+            if completed_task_id in depends_on:
+                # Check if all dependencies are now complete
+                all_complete = True
+                for dep_id in depends_on:
+                    dep = self.get(dep_id)
+                    if not dep or dep.status != TaskStatus.COMPLETED:
+                        all_complete = False
+                        break
+                
+                if all_complete:
+                    # Unblock the task
+                    self.db.execute("""
+                        UPDATE tasks SET status = 'pending' WHERE id = ?
+                    """, (row["id"],))
+        
+        self.db.commit()
+    
+    def get_output(self, task_id: str) -> Optional[str]:
+        """Get the captured output of a completed task."""
+        task = self.get(task_id)
+        if task:
+            return task.output
+        return None
     
     def fail(self, task_id: str, error: str) -> Optional[Task]:
         """Mark a task as failed."""
@@ -299,6 +368,10 @@ class TaskRepository:
             retry_count=row["retry_count"],
             max_retries=row["max_retries"],
             metadata=json.loads(row["metadata"]) if row["metadata"] else None,
+            depends_on=json.loads(row["depends_on"]) if row.get("depends_on") else None,
+            output=row.get("output"),
+            output_artifacts=json.loads(row["output_artifacts"]) if row.get("output_artifacts") else None,
+            next_tasks=json.loads(row["next_tasks"]) if row.get("next_tasks") else None,
         )
 
 

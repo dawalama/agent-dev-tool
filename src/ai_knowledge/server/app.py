@@ -38,6 +38,8 @@ class TaskRequest(BaseModel):
     project: str
     description: str
     priority: str = "normal"
+    requires_review: bool = False  # If true, task goes to awaiting_review first
+    review_prompt: str | None = None  # What to show reviewer
 
 
 class AssignRequest(BaseModel):
@@ -562,7 +564,7 @@ async def list_tasks(
 @app.post("/tasks")
 async def create_task(req: TaskRequest, request: Request):
     """Create a new task."""
-    from .db.models import TaskPriority as DBTaskPriority
+    from .db.models import TaskPriority as DBTaskPriority, TaskStatus as DBTaskStatus
     
     try:
         priority = DBTaskPriority(req.priority)
@@ -576,12 +578,20 @@ async def create_task(req: TaskRequest, request: Request):
         priority=priority,
     )
     
+    # If requires review, update status
+    if req.requires_review:
+        task_repo.db.execute("""
+            UPDATE tasks SET status = 'awaiting_review', review_prompt = ? WHERE id = ?
+        """, (req.review_prompt or req.description, task.id))
+        task_repo.db.commit()
+        task.status = DBTaskStatus.AWAITING_REVIEW
+    
     # Log event to SQLite
     event_repo.log(
         "task.created",
         project=req.project,
         task_id=task.id,
-        message=f"Task created: {req.description[:50]}",
+        message=f"Task created{' (requires review)' if req.requires_review else ''}: {req.description[:50]}",
     )
     
     event_bus.emit(
@@ -667,6 +677,161 @@ async def cancel_task(task_id: str, request: Request):
 class TaskRetryRequest(BaseModel):
     description: str | None = None  # Optional new description
     priority: str | None = None  # Optional new priority
+
+
+class ChainedTaskRequest(BaseModel):
+    project: str
+    description: str
+    priority: str = "normal"
+    depends_on: list[str] | None = None  # Task IDs to wait for
+    use_output_from: str | None = None  # Task ID whose output to inject as {{output}}
+
+
+@app.post("/tasks/chain")
+async def create_chained_task(req: ChainedTaskRequest, request: Request):
+    """Create a task that depends on other tasks.
+    
+    The description can include {{output}} which will be replaced with
+    the output from the use_output_from task when it runs.
+    """
+    from .db.models import TaskPriority as DBTaskPriority
+    
+    try:
+        priority = DBTaskPriority(req.priority)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid priority: {req.priority}")
+    
+    # Build dependencies list
+    depends_on = req.depends_on or []
+    if req.use_output_from and req.use_output_from not in depends_on:
+        depends_on.append(req.use_output_from)
+    
+    # If using output from another task, check if it's complete and substitute
+    description = req.description
+    if req.use_output_from:
+        source_task = task_repo.get(req.use_output_from)
+        if source_task and source_task.status.value == "completed" and source_task.output:
+            # Substitute output into description
+            description = description.replace("{{output}}", source_task.output)
+    
+    task = task_repo.create(
+        project=req.project,
+        description=description,
+        priority=priority,
+        depends_on=depends_on if depends_on else None,
+        metadata={"use_output_from": req.use_output_from} if req.use_output_from else None,
+    )
+    
+    event_bus.emit(
+        EventType.TASK_CREATED,
+        project=req.project,
+        task_id=task.id,
+    )
+    
+    return {
+        "success": True,
+        "task": {
+            "id": task.id,
+            "project": task.project,
+            "description": task.description,
+            "priority": task.priority.value,
+            "status": task.status.value,
+            "depends_on": task.depends_on,
+        },
+    }
+
+
+@app.get("/tasks/{task_id}/output")
+async def get_task_output(task_id: str):
+    """Get the captured output from a completed task."""
+    task = task_repo.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+    
+    return {
+        "task_id": task_id,
+        "status": task.status.value,
+        "output": task.output,
+        "output_artifacts": task.output_artifacts,
+    }
+
+
+class ReviewDecision(BaseModel):
+    approved: bool
+    comment: str | None = None
+    modified_description: str | None = None  # Allow reviewer to edit task
+
+
+@app.get("/tasks/pending-review")
+async def get_pending_review():
+    """Get all tasks awaiting human review."""
+    from .db.models import TaskStatus as DBTaskStatus
+    
+    tasks = task_repo.list(status=DBTaskStatus.AWAITING_REVIEW, limit=50)
+    
+    return [
+        {
+            "id": t.id,
+            "project": t.project,
+            "description": t.description,
+            "priority": t.priority.value,
+            "review_prompt": t.review_prompt,
+            "created_at": t.created_at.isoformat(),
+        }
+        for t in tasks
+    ]
+
+
+@app.post("/tasks/{task_id}/review")
+async def review_task(task_id: str, decision: ReviewDecision, request: Request):
+    """Approve or reject a task awaiting review."""
+    from .db.models import TaskStatus as DBTaskStatus
+    
+    task = task_repo.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+    
+    if task.status != DBTaskStatus.AWAITING_REVIEW:
+        raise HTTPException(status_code=400, detail=f"Task is not awaiting review: {task.status}")
+    
+    token_info = getattr(request.state, "token_info", None)
+    reviewer_id = token_info.id if token_info else "anonymous"
+    
+    if decision.approved:
+        # Update description if modified
+        description = decision.modified_description or task.description
+        
+        # Mark as pending so orchestrator picks it up
+        task_repo.db.execute("""
+            UPDATE tasks 
+            SET status = 'pending', 
+                description = ?,
+                reviewed_by = ?,
+                reviewed_at = ?
+            WHERE id = ?
+        """, (description, reviewer_id, datetime.now().isoformat(), task_id))
+        task_repo.db.commit()
+        
+        event_repo.log(
+            "task.approved",
+            project=task.project,
+            task_id=task_id,
+            message=f"Approved by {reviewer_id}",
+        )
+        
+        return {"success": True, "action": "approved", "task_id": task_id}
+    else:
+        # Rejected - cancel the task
+        task_repo.cancel(task_id)
+        
+        event_repo.log(
+            "task.rejected",
+            project=task.project,
+            task_id=task_id,
+            message=f"Rejected by {reviewer_id}: {decision.comment or 'no reason'}",
+        )
+        
+        return {"success": True, "action": "rejected", "task_id": task_id}
 
 
 @app.post("/tasks/{task_id}/retry")
@@ -779,8 +944,24 @@ async def task_stats():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time updates."""
+    from .streaming import get_stream_manager
+    
     await websocket.accept()
     connected_clients.add(websocket)
+    
+    # Track subscriptions for cleanup
+    stream_subscriptions: list[tuple[str, callable]] = []
+    
+    async def on_agent_output(project: str, content: str):
+        """Send agent output to this client."""
+        try:
+            await websocket.send_json({
+                "type": "agent.output",
+                "project": project,
+                "content": content,
+            })
+        except Exception:
+            pass
     
     try:
         # Send current state on connect
@@ -791,6 +972,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 "tasks": task_queue.stats() if task_queue else {},
             },
         })
+        
+        stream_manager = get_stream_manager()
         
         # Keep connection alive and handle incoming messages
         while True:
@@ -826,6 +1009,28 @@ async def websocket_endpoint(websocket: WebSocket):
                                 "data": {"message": str(e)},
                             })
                 
+                elif cmd == "subscribe":
+                    # Subscribe to agent output stream
+                    project = message.get("project")
+                    if project:
+                        await stream_manager.subscribe(project, on_agent_output)
+                        stream_subscriptions.append((project, on_agent_output))
+                        await websocket.send_json({
+                            "type": "subscribed",
+                            "project": project,
+                        })
+                
+                elif cmd == "unsubscribe":
+                    # Unsubscribe from agent output stream
+                    project = message.get("project")
+                    if project:
+                        await stream_manager.unsubscribe(project, on_agent_output)
+                        stream_subscriptions = [(p, c) for p, c in stream_subscriptions if p != project]
+                        await websocket.send_json({
+                            "type": "unsubscribed",
+                            "project": project,
+                        })
+                
             except asyncio.TimeoutError:
                 # Send ping to keep connection alive
                 await websocket.send_json({"type": "ping"})
@@ -833,6 +1038,10 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
+        # Cleanup subscriptions
+        stream_manager = get_stream_manager()
+        for project, callback in stream_subscriptions:
+            await stream_manager.unsubscribe(project, callback)
         connected_clients.discard(websocket)
 
 
