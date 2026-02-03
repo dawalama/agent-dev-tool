@@ -217,12 +217,24 @@ class ProcessManager:
     
     def start(self, process_id: str) -> ProcessState:
         """Start a registered process."""
+        from .ports import get_port_manager
+        
         state = self._processes.get(process_id)
         if not state:
             raise ValueError(f"Process not found: {process_id}")
         
         if state.status == ProcessStatus.RUNNING:
             raise ValueError(f"Process already running: {process_id}")
+        
+        # Check if port has been updated in the registry
+        port_manager = get_port_manager()
+        registered_port = port_manager.get_port(state.project, state.name)
+        if registered_port and registered_port != state.port:
+            # Port was changed - update the command
+            old_port = state.port
+            state.port = registered_port
+            state.command = self._update_command_port(state.command, old_port, registered_port)
+            state.save()
         
         # Ensure log directory exists
         state.log_path().parent.mkdir(parents=True, exist_ok=True)
@@ -519,6 +531,21 @@ class ProcessManager:
         
         # Generic: try PORT env var
         return f"PORT={port} {cmd}"
+    
+    def _update_command_port(self, cmd: str, old_port: Optional[int], new_port: int) -> str:
+        """Update port in an existing command."""
+        import re
+        
+        if old_port:
+            # Replace old port with new port in the command
+            cmd = re.sub(rf'--port\s*{old_port}\b', f'--port {new_port}', cmd)
+            cmd = re.sub(rf'-p\s*{old_port}\b', f'-p {new_port}', cmd)
+            cmd = re.sub(rf'PORT={old_port}\b', f'PORT={new_port}', cmd)
+            cmd = re.sub(rf'runserver\s*{old_port}\b', f'runserver {new_port}', cmd)
+            return cmd
+        
+        # No old port, use adjust method
+        return self._adjust_command_port(cmd, new_port)
     
     def stop_all(self):
         """Stop all running processes."""
