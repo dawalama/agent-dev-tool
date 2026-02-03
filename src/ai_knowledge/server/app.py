@@ -524,7 +524,7 @@ async def assign_to_agent(project: str, req: AssignRequest):
 async def list_tasks(
     project: str | None = None,
     status: str | None = None,
-    include_completed: bool = False,
+    include_completed: bool = True,
 ):
     """List tasks in the queue."""
     from .db.models import TaskStatus as DBTaskStatus
@@ -539,9 +539,8 @@ async def list_tasks(
     # Use SQLite repository
     tasks = task_repo.list(status=status_filter, project=project, limit=100)
     
-    # Filter out completed unless requested
-    if not include_completed:
-        tasks = [t for t in tasks if t.status not in (DBTaskStatus.COMPLETED, DBTaskStatus.CANCELLED)]
+    # Filter out cancelled unless requested
+    tasks = [t for t in tasks if t.status != DBTaskStatus.CANCELLED]
     
     return [
         {
@@ -622,6 +621,26 @@ async def create_task(req: TaskRequest, request: Request):
             "status": task.status.value,
         },
     }
+
+
+@app.get("/tasks/pending-review")
+async def get_pending_review():
+    """Get all tasks awaiting human review."""
+    from .db.models import TaskStatus as DBTaskStatus
+    
+    tasks = task_repo.list(status=DBTaskStatus.AWAITING_REVIEW, limit=50)
+    
+    return [
+        {
+            "id": t.id,
+            "project": t.project,
+            "description": t.description,
+            "priority": t.priority.value,
+            "review_prompt": getattr(t, 'review_prompt', None),
+            "created_at": t.created_at.isoformat(),
+        }
+        for t in tasks
+    ]
 
 
 @app.get("/tasks/{task_id}")
@@ -760,26 +779,6 @@ class ReviewDecision(BaseModel):
     approved: bool
     comment: str | None = None
     modified_description: str | None = None  # Allow reviewer to edit task
-
-
-@app.get("/tasks/pending-review")
-async def get_pending_review():
-    """Get all tasks awaiting human review."""
-    from .db.models import TaskStatus as DBTaskStatus
-    
-    tasks = task_repo.list(status=DBTaskStatus.AWAITING_REVIEW, limit=50)
-    
-    return [
-        {
-            "id": t.id,
-            "project": t.project,
-            "description": t.description,
-            "priority": t.priority.value,
-            "review_prompt": t.review_prompt,
-            "created_at": t.created_at.isoformat(),
-        }
-        for t in tasks
-    ]
 
 
 @app.post("/tasks/{task_id}/review")
