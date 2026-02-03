@@ -31,8 +31,185 @@ console = Console()
 
 
 @app.command()
-def init():
-    """Initialize the global .ai directory and configuration."""
+def init(
+    name: Annotated[Optional[str], typer.Argument(help="Project name (omit for global init)")] = None,
+    description: Annotated[Optional[str], typer.Option("--desc", "-d", help="Project description for AI analysis")] = None,
+    path: Annotated[Optional[Path], typer.Option("--path", "-p", help="Project path (defaults to ./<name>)")] = None,
+    proj_type: Annotated[Optional[str], typer.Option("--type", "-t", help="Override: backend, frontend, fullstack")] = None,
+    backend: Annotated[Optional[str], typer.Option("--backend", "-b", help="Override: fastapi, express, django")] = None,
+    frontend: Annotated[Optional[str], typer.Option("--frontend", "-f", help="Override: react, vue, nextjs")] = None,
+    database: Annotated[Optional[str], typer.Option("--database", help="Override: postgres, mongodb, sqlite")] = None,
+    deployment: Annotated[Optional[str], typer.Option("--deploy", help="Override: docker, render, vercel")] = None,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation")] = False,
+    no_register: Annotated[bool, typer.Option("--no-register", help="Don't register with adt")] = False,
+):
+    """Initialize a new project or global .ai directory.
+    
+    Without arguments: Initialize global ~/.ai/ directory.
+    With name: Create a new project with AI-inferred configuration.
+    
+    Examples:
+        adt init                                    # Global init
+        adt init myapi --desc "REST API for invoices"
+        adt init myapp --type=fullstack --backend=fastapi
+    """
+    # Global init if no name provided
+    if not name:
+        _init_global()
+        return
+    
+    # Project init
+    from .llm import analyze_project_description, is_ollama_available
+    from .scaffold import create_project
+    
+    # Get project configuration
+    if description:
+        rprint(f"[bold]Analyzing project description...[/bold]")
+        if is_ollama_available():
+            rprint("  Using local LLM (Ollama)")
+        else:
+            rprint("  Using heuristics (Ollama not available)")
+        
+        inferred = analyze_project_description(description)
+        inferred["description"] = description
+    else:
+        inferred = {
+            "type": "backend",
+            "stack": {"backend": "fastapi", "frontend": "none"},
+            "database": "postgres",
+            "deployment": "docker",
+            "features": [],
+            "reasoning": "Default configuration (no description provided)",
+        }
+    
+    # Check if LLM suggested a better name
+    suggested_name = inferred.get("suggested_name")
+    generic_names = {"myapi", "myapp", "myproject", "app", "api", "project", "test", "demo"}
+    
+    if suggested_name and name.lower() in generic_names:
+        # LLM found a name in description and user gave generic name
+        project_name = suggested_name
+        rprint(f"  [cyan]Suggested name:[/cyan] {suggested_name} (from description)")
+    elif suggested_name and name.lower() != suggested_name.lower():
+        # LLM found a different name - will ask user
+        project_name = name  # Use provided name for now, ask later
+    else:
+        project_name = name
+    
+    project_path = path or Path.cwd() / project_name
+    
+    # Apply overrides
+    if proj_type:
+        inferred["type"] = proj_type
+    if backend:
+        inferred["stack"]["backend"] = backend
+    if frontend:
+        inferred["stack"]["frontend"] = frontend
+    if database:
+        inferred["database"] = database
+    if deployment:
+        inferred["deployment"] = deployment
+    
+    # Show configuration
+    rprint("")
+    rprint(Panel(
+        f"[bold]Name:[/bold]       {project_name}\n"
+        f"[bold]Type:[/bold]       {inferred['type']}\n"
+        f"[bold]Backend:[/bold]    {inferred['stack'].get('backend', 'none')}\n"
+        f"[bold]Frontend:[/bold]   {inferred['stack'].get('frontend', 'none')}\n"
+        f"[bold]Database:[/bold]   {inferred.get('database', 'none')}\n"
+        f"[bold]Deployment:[/bold] {inferred.get('deployment', 'docker')}\n"
+        f"[bold]Features:[/bold]   {', '.join(inferred.get('features', [])) or 'none'}\n"
+        f"\n[dim]{inferred.get('reasoning', '')}[/dim]",
+        title="Project Configuration",
+        border_style="cyan"
+    ))
+    rprint(f"[bold]Path:[/bold] {project_path}")
+    rprint("")
+    
+    # Confirm
+    if not yes:
+        proceed = typer.confirm("Create project with this configuration?", default=True)
+        if not proceed:
+            # Allow editing
+            edit = typer.confirm("Edit configuration?", default=True)
+            if edit:
+                # Allow changing the name
+                new_name = typer.prompt("Name", default=project_name)
+                new_type = typer.prompt("Type", default=inferred["type"])
+                new_backend = typer.prompt("Backend", default=inferred["stack"].get("backend", "none"))
+                new_frontend = typer.prompt("Frontend", default=inferred["stack"].get("frontend", "none"))
+                new_db = typer.prompt("Database", default=inferred.get("database", "none"))
+                new_deploy = typer.prompt("Deployment", default=inferred.get("deployment", "docker"))
+                
+                project_name = new_name
+                project_path = path or Path.cwd() / project_name
+                inferred["type"] = new_type
+                inferred["stack"]["backend"] = new_backend
+                inferred["stack"]["frontend"] = new_frontend
+                inferred["database"] = new_db
+                inferred["deployment"] = new_deploy
+            else:
+                rprint("[yellow]Cancelled.[/yellow]")
+                raise typer.Exit(0)
+    
+    # Create project
+    rprint("")
+    rprint(f"[bold]Creating project...[/bold]")
+    
+    result = create_project(
+        path=project_path,
+        name=project_name,
+        config=inferred,
+        register=not no_register,
+    )
+    
+    for f in result["created_files"]:
+        rprint(f"  [green]✓[/green] {f}")
+    
+    # Register with adt
+    if not no_register:
+        config = load_config()
+        project = ProjectConfig(
+            name=project_name,
+            path=project_path,
+            description=description,
+            tags=[inferred["type"]] + inferred.get("features", []),
+        )
+        config.add_project(project)
+        save_config(config)
+        rprint(f"  [green]✓[/green] Registered with adt")
+    
+    # Initialize git
+    import subprocess
+    try:
+        subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+        rprint(f"  [green]✓[/green] Initialized git repository")
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    
+    rprint("")
+    rprint(f"[green]✓ Project created at {project_path}[/green]")
+    rprint("")
+    rprint("[bold]Next steps:[/bold]")
+    rprint(f"  cd {project_path}")
+    
+    if inferred["stack"].get("backend") in ("fastapi", "django"):
+        rprint("  uv sync")
+        rprint("  make dev")
+    elif inferred["stack"].get("backend") == "express":
+        rprint("  pnpm install")
+        rprint("  pnpm dev")
+    elif inferred["stack"].get("frontend") != "none":
+        if inferred["type"] == "fullstack":
+            rprint("  uv sync && cd frontend && pnpm install")
+        else:
+            rprint("  pnpm install")
+            rprint("  pnpm dev")
+
+
+def _init_global():
+    """Initialize global .ai directory."""
     config = load_config()
     
     global_ai_dir = config.global_ai_dir
@@ -43,6 +220,24 @@ def init():
         rules_file.write_text("""# Global AI Rules
 
 > Universal rules for all projects. AI assistants should follow these unless project-specific rules override them.
+
+## Agent Dev Tool (adt)
+
+You have access to `adt` - a CLI for knowledge, skills, and tools:
+
+```bash
+# Run skills (high-level workflows)
+adt run skill techdebt              # Find code issues
+adt run skill review                # Code review
+
+# Run tools (single-purpose functions)
+adt run tool git_status_summary     # Git status as JSON
+adt run tool find_todos path=src    # Find TODOs
+
+# Discovery
+adt skill list                      # List available skills
+adt tool list                       # List available tools
+```
 
 ## Code Style
 
@@ -63,9 +258,7 @@ def init():
 ## After Corrections
 
 When corrected, ask: "Should I add this to learnings?"
-Then update the appropriate file:
-- `~/.ai/learnings.md` for universal lessons
-- `.ai/learnings.md` for project-specific lessons
+Then run: `adt learn "Title" -i "issue" -c "correction"`
 """)
     
     learnings_file = global_ai_dir / "learnings.md"
@@ -74,20 +267,16 @@ Then update the appropriate file:
 
 > Universal corrections that apply across all projects.
 
-## Format
-
-### YYYY-MM-DD: Brief Title
-
-**Issue:** What was done incorrectly
-
-**Correction:** What should be done instead
-
-**Context:** Optional additional context
+<!-- New entries are added below this line -->
 
 ---
 
 *No entries yet.*
 """)
+    
+    # Create skills and tools directories
+    (global_ai_dir / "skills").mkdir(exist_ok=True)
+    (global_ai_dir / "tools").mkdir(exist_ok=True)
     
     save_config(config)
     
