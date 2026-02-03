@@ -1157,36 +1157,131 @@ def server_start(
     host: Annotated[str, typer.Option("--host", "-h", help="Host to bind")] = "127.0.0.1",
     port: Annotated[int, typer.Option("--port", "-p", help="Port to bind")] = 8420,
     daemon: Annotated[bool, typer.Option("--daemon", "-d", help="Run in background")] = False,
+    reload: Annotated[bool, typer.Option("--reload", "-r", help="Auto-reload on changes")] = False,
 ):
     """Start the ADT Command Center server."""
-    from .server.config import Config, ensure_adt_home
+    from .server.config import ensure_adt_home
     
     ensure_adt_home()
-    config = Config.load()
     
     if daemon:
-        rprint("[yellow]Daemon mode not yet implemented. Running in foreground.[/yellow]")
+        # Run in background
+        import subprocess
+        import sys
+        
+        log_path = Path.home() / ".adt" / "logs" / "server.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(log_path, "a") as log_file:
+            process = subprocess.Popen(
+                [sys.executable, "-m", "uvicorn", 
+                 "ai_knowledge.server.app:app",
+                 "--host", host,
+                 "--port", str(port)],
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        
+        # Save PID
+        pid_path = Path.home() / ".adt" / "server.pid"
+        pid_path.write_text(str(process.pid))
+        
+        rprint(f"[green]✓[/green] Server started in background")
+        rprint(f"   PID: {process.pid}")
+        rprint(f"   URL: http://{host}:{port}")
+        rprint(f"   Logs: {log_path}")
+        rprint("")
+        rprint(f"Stop with: adt server stop")
+        return
     
     rprint(f"[bold]Starting ADT Command Center...[/bold]")
-    rprint(f"  Host: {host}")
-    rprint(f"  Port: {port}")
+    rprint(f"  URL: http://{host}:{port}")
+    rprint(f"  API docs: http://{host}:{port}/docs")
+    rprint(f"  WebSocket: ws://{host}:{port}/ws")
     rprint("")
     rprint("[dim]Press Ctrl+C to stop[/dim]")
+    rprint("")
     
-    # TODO: Start actual server
-    rprint("[yellow]Server implementation coming soon.[/yellow]")
+    import uvicorn
+    uvicorn.run(
+        "ai_knowledge.server.app:app",
+        host=host,
+        port=port,
+        reload=reload,
+    )
 
 
 @server_app.command("status")
 def server_status():
     """Check server status."""
-    rprint("[yellow]Server status check not yet implemented.[/yellow]")
+    import urllib.request
+    import urllib.error
+    from .server.config import Config
+    
+    config = Config.load()
+    url = f"http://{config.server.host}:{config.server.port}/status"
+    
+    # Check PID file
+    pid_path = Path.home() / ".adt" / "server.pid"
+    pid = None
+    if pid_path.exists():
+        try:
+            pid = int(pid_path.read_text().strip())
+            # Check if process is running
+            os.kill(pid, 0)
+        except (ValueError, OSError):
+            pid = None
+            pid_path.unlink(missing_ok=True)
+    
+    # Try to connect
+    try:
+        with urllib.request.urlopen(url, timeout=2) as response:
+            data = json.loads(response.read().decode())
+            
+            rprint("[green]● Server is running[/green]")
+            rprint(f"  URL: http://{config.server.host}:{config.server.port}")
+            if pid:
+                rprint(f"  PID: {pid}")
+            rprint(f"  Agents: {data.get('agents', {}).get('running', 0)} running")
+            rprint(f"  Tasks: {data.get('queue', {}).get('pending', 0)} pending")
+            rprint(f"  Clients: {data.get('connected_clients', 0)} connected")
+    except urllib.error.URLError:
+        if pid:
+            rprint(f"[yellow]● Server process exists (PID {pid}) but not responding[/yellow]")
+        else:
+            rprint("[dim]○ Server is not running[/dim]")
+            rprint(f"  Start with: adt server start")
 
 
 @server_app.command("stop")
-def server_stop():
+def server_stop(
+    force: Annotated[bool, typer.Option("--force", "-f", help="Force kill")] = False,
+):
     """Stop the running server."""
-    rprint("[yellow]Server stop not yet implemented.[/yellow]")
+    import signal
+    
+    pid_path = Path.home() / ".adt" / "server.pid"
+    
+    if not pid_path.exists():
+        rprint("[yellow]No server PID file found.[/yellow]")
+        return
+    
+    try:
+        pid = int(pid_path.read_text().strip())
+        sig = signal.SIGKILL if force else signal.SIGTERM
+        os.kill(pid, sig)
+        pid_path.unlink()
+        rprint(f"[green]✓[/green] Server stopped (PID {pid})")
+    except ValueError:
+        rprint("[red]Invalid PID file[/red]")
+        pid_path.unlink()
+    except OSError as e:
+        if e.errno == 3:  # No such process
+            rprint("[yellow]Server process not found (already stopped?)[/yellow]")
+            pid_path.unlink()
+        else:
+            rprint(f"[red]Error stopping server:[/red] {e}")
 
 
 # =============================================================================
