@@ -115,6 +115,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
                         <button onclick="showTab('activity')" id="tab-activity" class="px-4 py-2 text-sm tab-active">Activity</button>
                         <button onclick="showTab('workers')" id="tab-workers" class="px-4 py-2 text-sm tab-inactive">Workers</button>
                         <button onclick="showTab('processes')" id="tab-processes" class="px-4 py-2 text-sm tab-inactive">Processes</button>
+                        <button onclick="showTab('system')" id="tab-system" class="px-4 py-2 text-sm tab-inactive">System</button>
                     </div>
                     
                     <!-- Activity Tab -->
@@ -142,6 +143,28 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
                         </div>
                         <div id="processes-list" class="space-y-2">
                             <div class="text-gray-500 text-sm">No processes configured</div>
+                        </div>
+                    </div>
+                    
+                    <!-- System Tab -->
+                    <div id="panel-system" class="p-4 hidden">
+                        <div class="flex justify-between items-center mb-3">
+                            <span class="text-xs text-gray-400">ADT Server</span>
+                            <button onclick="loadServerLogs()" class="text-xs bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded">Refresh</button>
+                        </div>
+                        <div id="server-status" class="mb-3 grid grid-cols-2 gap-2 text-xs">
+                            <div class="bg-gray-700 rounded p-2">
+                                <div class="text-gray-400">Uptime</div>
+                                <div id="server-uptime" class="text-white font-mono">--</div>
+                            </div>
+                            <div class="bg-gray-700 rounded p-2">
+                                <div class="text-gray-400">Memory</div>
+                                <div id="server-memory" class="text-white font-mono">--</div>
+                            </div>
+                        </div>
+                        <div class="text-xs text-gray-400 mb-1">Server Logs</div>
+                        <div id="server-logs" class="bg-gray-900 rounded p-2 text-xs font-mono text-gray-300 h-64 overflow-y-auto whitespace-pre-wrap">
+                            Loading...
                         </div>
                     </div>
                 </div>
@@ -288,11 +311,12 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
         }
 
         function showTab(tab) {
-            ['activity', 'workers', 'processes'].forEach(t => {
+            ['activity', 'workers', 'processes', 'system'].forEach(t => {
                 document.getElementById(`tab-${t}`).className = t === tab ? 'px-4 py-2 text-sm tab-active' : 'px-4 py-2 text-sm tab-inactive';
                 document.getElementById(`panel-${t}`).classList.toggle('hidden', t !== tab);
             });
             if (tab === 'processes') loadProcesses();
+            if (tab === 'system') loadServerLogs();
         }
 
         function selectProject(project) {
@@ -684,6 +708,34 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             if (result?.success) {
                 showNotification(`Created fix task: ${result.task.id}`);
                 loadTasks();
+            }
+        }
+
+        // System / Admin functions
+        async function loadServerLogs() {
+            const [logsResult, statusResult] = await Promise.all([
+                api('/admin/logs?lines=200'),
+                api('/admin/status')
+            ]);
+            
+            if (logsResult?.logs) {
+                const logsEl = document.getElementById('server-logs');
+                logsEl.textContent = logsResult.logs;
+                // Scroll to bottom
+                logsEl.scrollTop = logsEl.scrollHeight;
+            }
+            
+            if (statusResult) {
+                // Format uptime
+                const uptime = statusResult.uptime_seconds;
+                const hours = Math.floor(uptime / 3600);
+                const mins = Math.floor((uptime % 3600) / 60);
+                const secs = uptime % 60;
+                document.getElementById('server-uptime').textContent = 
+                    hours > 0 ? `${hours}h ${mins}m` : `${mins}m ${secs}s`;
+                
+                document.getElementById('server-memory').textContent = 
+                    `${statusResult.memory_mb} MB`;
             }
         }
 

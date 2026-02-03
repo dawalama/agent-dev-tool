@@ -1243,15 +1243,14 @@ async def assign_port(req: PortAssignRequest):
         
         # Also update the process command if exists
         process_id = f"{req.project}-{req.service}"
-        if process_id in state.process_manager._processes:
-            proc_state = state.process_manager._processes[process_id]
+        if process_id in process_manager._processes:
+            proc_state = process_manager._processes[process_id]
             old_port = proc_state.port
             if old_port != port:
-                proc_state.port = port
                 # Update command with new port
-                from .processes import ProcessManager
-                proc_state.command = state.process_manager._update_command_port(proc_state.command, port)
-                state.process_manager._save_state()
+                proc_state.command = process_manager._update_command_port(proc_state.command, old_port, port)
+                proc_state.port = port
+                proc_state.save()
         
         return {"success": True, "project": req.project, "service": req.service, "port": port}
     except RuntimeError as e:
@@ -1586,6 +1585,55 @@ async def get_audit_logs(
         }
         for e in entries
     ]
+
+
+# =============================================================================
+# Admin / System Endpoints
+# =============================================================================
+
+@app.get("/admin/logs")
+async def get_server_logs(lines: int = 200):
+    """Get ADT server logs."""
+    import subprocess
+    from pathlib import Path
+    
+    log_file = Path.home() / ".adt" / "logs" / "server.log"
+    
+    if not log_file.exists():
+        return {"logs": "No log file found"}
+    
+    try:
+        # Use tail for efficiency
+        result = subprocess.run(
+            ["tail", "-n", str(lines), str(log_file)],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        return {"logs": result.stdout}
+    except Exception as e:
+        return {"logs": f"Error reading logs: {e}"}
+
+
+@app.get("/admin/status")
+async def get_server_status():
+    """Get ADT server status and stats."""
+    import os
+    import time
+    import psutil
+    
+    process = psutil.Process(os.getpid())
+    
+    return {
+        "pid": os.getpid(),
+        "uptime_seconds": int(time.time() - process.create_time()),
+        "memory_mb": round(process.memory_info().rss / 1024 / 1024, 1),
+        "cpu_percent": process.cpu_percent(),
+        "agents_active": len([a for a in agent_manager.list() if a.status == "running"]),
+        "processes_running": len([p for p in process_manager.list() if p.status.value == "running"]),
+        "tasks_pending": len([t for t in task_repo.list() if t.status.value == "pending"]),
+        "tasks_in_progress": len([t for t in task_repo.list() if t.status.value == "in_progress"]),
+    }
 
 
 def create_app() -> FastAPI:
