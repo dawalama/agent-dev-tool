@@ -28,9 +28,12 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
         <!-- Header -->
         <div class="flex justify-between items-center mb-6">
             <h1 class="text-2xl font-bold">ADT Command Center</h1>
-            <div id="connection-status" class="flex items-center gap-2">
-                <span class="w-2 h-2 rounded-full bg-gray-500" id="ws-indicator"></span>
-                <span class="text-sm text-gray-400" id="ws-status">Connecting...</span>
+            <div class="flex items-center gap-4">
+                <div id="connection-status" class="flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-gray-500" id="ws-indicator"></span>
+                    <span class="text-sm text-gray-400" id="ws-status">Connecting...</span>
+                </div>
+                <button onclick="logout()" class="text-sm text-gray-400 hover:text-white">Logout</button>
             </div>
         </div>
 
@@ -214,11 +217,82 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
         </div>
     </div>
 
+    <!-- Auth Modal -->
+    <div id="auth-modal" class="fixed inset-0 bg-black bg-opacity-75 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-lg p-6 w-96">
+            <h3 class="text-lg font-semibold mb-4">Authentication Required</h3>
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">API Token</label>
+                    <input type="password" id="auth-token" class="w-full bg-gray-700 rounded px-3 py-2" 
+                           placeholder="adt_...">
+                    <p class="text-xs text-gray-500 mt-1">Create token: adt token create dashboard</p>
+                </div>
+                <div class="flex gap-2 justify-end">
+                    <button onclick="submitAuth()" class="px-4 py-2 rounded bg-blue-600 hover:bg-blue-700">Authenticate</button>
+                </div>
+                <div id="auth-error" class="text-red-400 text-sm hidden"></div>
+            </div>
+        </div>
+    </div>
+
     <script>
         const API_BASE = '';
         let ws = null;
         let projects = [];
         let reconnectAttempts = 0;
+        let authToken = localStorage.getItem('adt_token') || '';
+
+        // Auth functions
+        function getAuthHeaders() {
+            return authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
+        }
+
+        function showAuthModal() {
+            document.getElementById('auth-modal').classList.remove('hidden');
+            document.getElementById('auth-modal').classList.add('flex');
+            document.getElementById('auth-token').focus();
+        }
+
+        function hideAuthModal() {
+            document.getElementById('auth-modal').classList.add('hidden');
+            document.getElementById('auth-modal').classList.remove('flex');
+        }
+
+        async function submitAuth() {
+            const token = document.getElementById('auth-token').value.trim();
+            if (!token) return;
+
+            // Test the token
+            try {
+                const response = await fetch('/status', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                
+                if (response.ok) {
+                    authToken = token;
+                    localStorage.setItem('adt_token', token);
+                    hideAuthModal();
+                    document.getElementById('auth-error').classList.add('hidden');
+                    loadAll();
+                } else if (response.status === 401 || response.status === 403) {
+                    document.getElementById('auth-error').textContent = 'Invalid or expired token';
+                    document.getElementById('auth-error').classList.remove('hidden');
+                } else {
+                    document.getElementById('auth-error').textContent = 'Authentication failed';
+                    document.getElementById('auth-error').classList.remove('hidden');
+                }
+            } catch (e) {
+                document.getElementById('auth-error').textContent = 'Connection error';
+                document.getElementById('auth-error').classList.remove('hidden');
+            }
+        }
+
+        function logout() {
+            authToken = '';
+            localStorage.removeItem('adt_token');
+            showAuthModal();
+        }
 
         // WebSocket connection
         function connectWebSocket() {
@@ -281,10 +355,29 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
                 ...options,
                 headers: {
                     'Content-Type': 'application/json',
+                    ...getAuthHeaders(),
                     ...options.headers,
                 },
             });
+            
+            // Handle auth errors
+            if (response.status === 401 || response.status === 403) {
+                showAuthModal();
+                throw new Error('Authentication required');
+            }
+            
             return response.json();
+        }
+        
+        async function loadAll() {
+            try {
+                await loadStatus();
+                await loadProjects();
+                await loadAgents();
+                await loadTasks();
+            } catch (e) {
+                // Auth error already handled
+            }
         }
 
         async function loadStatus() {
@@ -550,19 +643,39 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
         }
 
         // Initialize
-        document.addEventListener('DOMContentLoaded', () => {
-            loadStatus();
-            loadProjects();
-            loadAgents();
-            loadTasks();
-            connectWebSocket();
+        document.addEventListener('DOMContentLoaded', async () => {
+            // Check if we have a valid token
+            if (authToken) {
+                try {
+                    const response = await fetch('/status', {
+                        headers: getAuthHeaders()
+                    });
+                    if (response.ok) {
+                        loadAll();
+                        connectWebSocket();
+                    } else {
+                        showAuthModal();
+                    }
+                } catch (e) {
+                    showAuthModal();
+                }
+            } else {
+                showAuthModal();
+            }
             
             // Auto-refresh every 10 seconds
             setInterval(() => {
-                loadStatus();
-                loadAgents();
-                loadTasks();
+                if (authToken) {
+                    loadStatus();
+                    loadAgents();
+                    loadTasks();
+                }
             }, 10000);
+            
+            // Handle Enter key in auth modal
+            document.getElementById('auth-token').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') submitAuth();
+            });
         });
     </script>
 </body>

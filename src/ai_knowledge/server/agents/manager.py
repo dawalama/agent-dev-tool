@@ -14,6 +14,7 @@ from typing import Callable
 from pydantic import BaseModel, Field
 
 from ..config import Config, get_adt_home
+from ..scrubber import ScrubberFileWrapper, get_scrubber
 
 
 class AgentStatus(str, Enum):
@@ -212,8 +213,9 @@ class AgentManager:
             if task:
                 cmd.extend(["--task", task])
         
-        # Open log file
-        log_file = open(log_path, "a")
+        # Open log file with secret scrubbing
+        raw_log_file = open(log_path, "a")
+        log_file = ScrubberFileWrapper(raw_log_file, get_scrubber())
         log_file.write(f"\n\n=== Agent started at {datetime.now().isoformat()} ===\n")
         log_file.write(f"Project: {project}\n")
         log_file.write(f"Provider: {provider}\n")

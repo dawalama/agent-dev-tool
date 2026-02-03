@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
@@ -19,6 +19,9 @@ from .queue import TaskQueue, TaskPriority, TaskStatus
 from .events import EventBus, Event, get_event_bus
 from .events.bus import EventType
 from .vault import get_secret
+from .auth import get_auth_manager, TokenInfo, Role
+from .audit import audit, AuditAction, get_audit_logger
+from .middleware import AuthMiddleware
 
 
 # Pydantic models for API
@@ -45,19 +48,41 @@ agent_manager: AgentManager | None = None
 task_queue: TaskQueue | None = None
 event_bus: EventBus | None = None
 telegram_bot = None
+auth_manager = None
 connected_clients: set[WebSocket] = set()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown logic."""
-    global config, agent_manager, task_queue, event_bus, telegram_bot
+    global config, agent_manager, task_queue, event_bus, telegram_bot, auth_manager
     
     ensure_adt_home()
     config = Config.load()
     agent_manager = AgentManager(config)
     task_queue = TaskQueue()
     event_bus = get_event_bus()
+    auth_manager = get_auth_manager()
+    
+    # Create initial admin token if none exist
+    if not auth_manager.has_any_tokens():
+        token, info = auth_manager.create_initial_admin_token()
+        print("\n" + "=" * 60)
+        print("INITIAL ADMIN TOKEN CREATED")
+        print("=" * 60)
+        print(f"Token: {token}")
+        print("\nSave this token! It will not be shown again.")
+        print("Use it to authenticate API requests:")
+        print(f"  curl -H 'Authorization: Bearer {token}' http://...")
+        print("=" * 60 + "\n")
+        
+        audit(
+            AuditAction.AUTH_TOKEN_CREATED,
+            actor_type="system",
+            resource_type="token",
+            resource_id=info.id,
+            metadata={"name": info.name, "role": info.role.value},
+        )
     
     # Subscribe to events to broadcast to WebSocket clients
     @event_bus.subscribe()
@@ -215,6 +240,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Auth middleware (can be disabled via config)
+# Set auth_enabled=False for development without tokens
+app.add_middleware(AuthMiddleware, auth_enabled=True)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # In production, restrict this
@@ -290,14 +319,26 @@ async def list_agents():
 
 
 @app.post("/agents/spawn")
-async def spawn_agent(req: SpawnRequest):
+async def spawn_agent(req: SpawnRequest, request: Request):
     """Spawn a new agent."""
+    token_info = getattr(request.state, "token_info", None)
+    
     try:
         state = agent_manager.spawn(
             project=req.project,
             provider=req.provider,
             task=req.task,
             worktree=req.worktree,
+        )
+        
+        audit(
+            AuditAction.AGENT_SPAWN,
+            actor_type="user" if token_info else "system",
+            actor_id=token_info.id if token_info else None,
+            resource_type="agent",
+            resource_id=req.project,
+            channel="api",
+            metadata={"provider": state.provider, "task": req.task[:100] if req.task else None},
         )
         
         event_bus.emit(
@@ -635,6 +676,128 @@ async def list_events(limit: int = 50, event_type: str | None = None):
             "data": e.data,
         }
         for e in events
+    ]
+
+
+# Token management endpoints
+
+class CreateTokenRequest(BaseModel):
+    name: str
+    role: str = "operator"
+    expires_in_days: int | None = None
+
+
+@app.get("/tokens")
+async def list_tokens(request: Request):
+    """List all API tokens (admin only)."""
+    tokens = auth_manager.list_tokens()
+    return [
+        {
+            "id": t.id,
+            "name": t.name,
+            "role": t.role.value,
+            "created_at": t.created_at.isoformat(),
+            "expires_at": t.expires_at.isoformat() if t.expires_at else None,
+            "last_used_at": t.last_used_at.isoformat() if t.last_used_at else None,
+            "revoked": t.revoked,
+        }
+        for t in tokens
+    ]
+
+
+@app.post("/tokens")
+async def create_token(req: CreateTokenRequest, request: Request):
+    """Create a new API token (admin only)."""
+    token_info = getattr(request.state, "token_info", None)
+    
+    try:
+        role = Role(req.role)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid role: {req.role}")
+    
+    plain_token, info = auth_manager.create_token(
+        name=req.name,
+        role=role,
+        expires_in_days=req.expires_in_days,
+        created_by=token_info.id if token_info else None,
+    )
+    
+    audit(
+        AuditAction.AUTH_TOKEN_CREATED,
+        actor_type="user" if token_info else "system",
+        actor_id=token_info.id if token_info else None,
+        resource_type="token",
+        resource_id=info.id,
+        channel="api",
+        metadata={"name": info.name, "role": info.role.value},
+    )
+    
+    return {
+        "token": plain_token,
+        "id": info.id,
+        "name": info.name,
+        "role": info.role.value,
+        "expires_at": info.expires_at.isoformat() if info.expires_at else None,
+    }
+
+
+@app.delete("/tokens/{token_id}")
+async def revoke_token(token_id: str, request: Request):
+    """Revoke an API token (admin only)."""
+    token_info = getattr(request.state, "token_info", None)
+    
+    success = auth_manager.revoke_token(token_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Token not found")
+    
+    audit(
+        AuditAction.AUTH_TOKEN_REVOKED,
+        actor_type="user" if token_info else "system",
+        actor_id=token_info.id if token_info else None,
+        resource_type="token",
+        resource_id=token_id,
+        channel="api",
+    )
+    
+    return {"success": True}
+
+
+# Audit log endpoint
+
+@app.get("/audit")
+async def get_audit_logs(
+    request: Request,
+    action: str | None = None,
+    since: str | None = None,
+    limit: int = 100,
+):
+    """Get audit logs (admin only)."""
+    from datetime import datetime
+    
+    since_dt = None
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format")
+    
+    logger = get_audit_logger()
+    entries = logger.query(action=action, since=since_dt, limit=limit)
+    
+    return [
+        {
+            "id": e.id,
+            "timestamp": e.timestamp.isoformat(),
+            "actor_type": e.actor_type,
+            "actor_id": e.actor_id,
+            "action": e.action,
+            "resource_type": e.resource_type,
+            "resource_id": e.resource_id,
+            "status": e.status,
+            "error": e.error,
+            "metadata": e.metadata,
+        }
+        for e in entries
     ]
 
 

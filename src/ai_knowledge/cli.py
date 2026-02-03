@@ -1475,6 +1475,127 @@ def config_delete_secret(
 
 
 # =============================================================================
+# Token Commands
+# =============================================================================
+
+token_app = typer.Typer(help="Manage API tokens")
+app.add_typer(token_app, name="token")
+
+
+@token_app.command("create")
+def token_create(
+    name: Annotated[str, typer.Argument(help="Token name/description")],
+    role: Annotated[str, typer.Option("--role", "-r", help="Role: admin, operator, viewer, agent")] = "operator",
+    expires: Annotated[Optional[int], typer.Option("--expires", "-e", help="Expires in N days")] = None,
+):
+    """Create a new API token."""
+    from .server.auth import get_auth_manager, Role
+    
+    try:
+        role_enum = Role(role)
+    except ValueError:
+        rprint(f"[red]Invalid role:[/red] {role}")
+        rprint("Valid roles: admin, operator, viewer, agent")
+        raise typer.Exit(1)
+    
+    auth = get_auth_manager()
+    plain_token, info = auth.create_token(
+        name=name,
+        role=role_enum,
+        expires_in_days=expires,
+    )
+    
+    rprint()
+    rprint(Panel(
+        f"[bold green]{plain_token}[/bold green]",
+        title="New API Token",
+        subtitle="Save this - it won't be shown again!",
+    ))
+    rprint()
+    rprint(f"[dim]ID:[/dim] {info.id}")
+    rprint(f"[dim]Name:[/dim] {info.name}")
+    rprint(f"[dim]Role:[/dim] {info.role.value}")
+    if info.expires_at:
+        rprint(f"[dim]Expires:[/dim] {info.expires_at.isoformat()}")
+    rprint()
+    rprint("[dim]Use with:[/dim]")
+    rprint(f"  curl -H 'Authorization: Bearer {plain_token}' http://127.0.0.1:8420/status")
+
+
+@token_app.command("list")
+def token_list():
+    """List all API tokens."""
+    from .server.auth import get_auth_manager
+    
+    auth = get_auth_manager()
+    tokens = auth.list_tokens()
+    
+    if not tokens:
+        rprint("[dim]No tokens found. Create one with:[/dim] adt token create <name>")
+        return
+    
+    table = Table(title="API Tokens")
+    table.add_column("ID", style="dim")
+    table.add_column("Name")
+    table.add_column("Role")
+    table.add_column("Created")
+    table.add_column("Last Used")
+    table.add_column("Status")
+    
+    for t in tokens:
+        status = "[red]revoked[/red]" if t.revoked else "[green]active[/green]"
+        if t.expires_at and not t.revoked:
+            from datetime import datetime
+            if t.expires_at < datetime.now():
+                status = "[yellow]expired[/yellow]"
+        
+        table.add_row(
+            t.id,
+            t.name,
+            t.role.value,
+            t.created_at.strftime("%Y-%m-%d"),
+            t.last_used_at.strftime("%Y-%m-%d %H:%M") if t.last_used_at else "[dim]never[/dim]",
+            status,
+        )
+    
+    rprint(table)
+
+
+@token_app.command("revoke")
+def token_revoke(
+    token_id: Annotated[str, typer.Argument(help="Token ID to revoke")],
+):
+    """Revoke an API token."""
+    from .server.auth import get_auth_manager
+    
+    auth = get_auth_manager()
+    if auth.revoke_token(token_id):
+        rprint(f"[green]✓[/green] Token revoked: {token_id}")
+    else:
+        rprint(f"[red]Token not found:[/red] {token_id}")
+
+
+@token_app.command("delete")
+def token_delete(
+    token_id: Annotated[str, typer.Argument(help="Token ID to delete")],
+    force: Annotated[bool, typer.Option("--force", "-f", help="Skip confirmation")] = False,
+):
+    """Permanently delete an API token."""
+    from .server.auth import get_auth_manager
+    
+    if not force:
+        confirm = typer.confirm(f"Permanently delete token {token_id}?")
+        if not confirm:
+            raise typer.Abort()
+    
+    auth = get_auth_manager()
+    if auth.delete_token(token_id):
+        rprint(f"[green]✓[/green] Token deleted: {token_id}")
+    else:
+        rprint(f"[red]Token not found:[/red] {token_id}")
+
+
+# =============================================================================
 # Agent Commands
 # =============================================================================
 
