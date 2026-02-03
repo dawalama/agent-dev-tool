@@ -57,7 +57,7 @@ def read_project_files(project_path: str) -> dict[str, str]:
 def analyze_with_llm(project_name: str, files: dict[str, str]) -> list[DiscoveredProcess]:
     """Use LLM to analyze project files and discover processes."""
     
-    prompt = f"""Analyze this project's configuration files and identify all the dev processes that can be run.
+    prompt = f"""Analyze this project's configuration files and identify ONLY the long-running dev processes.
 
 Project: {project_name}
 
@@ -68,24 +68,29 @@ Files:
     
     prompt += """
 
-Based on these files, identify all runnable dev processes. For each process, provide:
-1. name: A short name (e.g., "frontend", "backend", "worker", "db", "queue")
-2. command: The exact command to run it (e.g., "npm run dev", "npm run worker:dev", "uvicorn main:app --reload")
-3. description: Brief description of what it does
-4. default_port: The port it runs on (if it's a server), or null
-5. cwd: The subdirectory to run from (e.g., "frontend", "backend"), or null for root
+Identify ONLY long-running dev processes (servers, workers, watchers). For each, provide:
+1. name: A short unique name (e.g., "frontend", "backend", "worker", "api")
+2. command: The npm/python command (e.g., "npm run dev", "npm run worker:dev")
+3. description: Brief description
+4. default_port: Port number if it's a web server, or null for workers
+5. cwd: Subdirectory to run from, or null for root
 
-Return ONLY valid JSON array, no other text:
+EXCLUDE these types of scripts:
+- Build scripts (build, compile, bundle)
+- Test scripts (test, jest, mocha, cypress)
+- Lint/format scripts (lint, eslint, prettier, format)
+- One-time scripts (seed, migrate, generate, install, clean)
+- Type checking (typecheck, tsc)
+
+INCLUDE only:
+- Dev servers (dev, start, serve)
+- Workers (worker, worker:dev, queue)
+- Watch processes (watch, but only if it's a server)
+
+Return ONLY a valid JSON array with NO duplicates:
 [
-  {"name": "...", "command": "...", "description": "...", "default_port": ..., "cwd": ...},
-  ...
+  {"name": "...", "command": "...", "description": "...", "default_port": ..., "cwd": ...}
 ]
-
-Important:
-- Look for scripts in package.json (dev, start, worker, worker:dev, etc.)
-- Look for Python commands in pyproject.toml
-- Consider docker-compose services
-- Include ALL runnable dev processes, not just frontend/backend
 """
 
     try:
@@ -102,11 +107,41 @@ Important:
             json_str = response[start:end]
             data = json.loads(json_str)
             
-            return [DiscoveredProcess(**p) for p in data]
+            processes = [DiscoveredProcess(**p) for p in data]
+            return deduplicate_processes(processes)
     except Exception as e:
         print(f"LLM analysis failed: {e}")
     
     return []
+
+
+def deduplicate_processes(processes: list[DiscoveredProcess]) -> list[DiscoveredProcess]:
+    """Remove duplicate processes by name and command."""
+    seen_names = set()
+    seen_commands = set()
+    unique = []
+    
+    for p in processes:
+        # Normalize name
+        name = p.name.lower().strip()
+        cmd = p.command.lower().strip()
+        
+        # Skip if we've seen this name or command
+        if name in seen_names or cmd in seen_commands:
+            continue
+        
+        # Skip obvious non-dev scripts that slipped through
+        skip_patterns = ['test', 'lint', 'build', 'seed', 'migrate', 'generate', 'typecheck', 'format', 'clean']
+        if any(pattern in name for pattern in skip_patterns):
+            continue
+        if any(pattern in cmd for pattern in skip_patterns):
+            continue
+        
+        seen_names.add(name)
+        seen_commands.add(cmd)
+        unique.append(p)
+    
+    return unique
 
 
 def analyze_with_heuristics(project_path: str, files: dict[str, str]) -> list[DiscoveredProcess]:
