@@ -234,8 +234,21 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             return { 'Authorization': `Bearer ${authToken}`, 'Content-Type': 'application/json' };
         }
 
-        async function api(path, options = {}) {
+        async function api(path, methodOrOptions = 'GET', body = null) {
             try {
+                let options = {};
+                
+                // Support both api(path, {method, body}) and api(path, 'POST', data)
+                if (typeof methodOrOptions === 'string') {
+                    options.method = methodOrOptions;
+                    if (body) {
+                        options.body = JSON.stringify(body);
+                        options.headers = { 'Content-Type': 'application/json' };
+                    }
+                } else {
+                    options = methodOrOptions;
+                }
+                
                 const resp = await fetch(path, {
                     ...options,
                     headers: { ...getAuthHeaders(), ...(options.headers || {}) }
