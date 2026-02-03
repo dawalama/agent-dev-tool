@@ -82,6 +82,31 @@ async def lifespan(app: FastAPI):
     from .processes import get_process_manager
     process_manager = get_process_manager()
     
+    # Register process event handlers for real-time updates
+    def on_process_event(event_name: str):
+        def handler(process_id: str, *args):
+            # Broadcast to WebSocket clients
+            import asyncio
+            state = process_manager.get(process_id)
+            if state:
+                msg = {
+                    "type": f"process.{event_name}",
+                    "process_id": process_id,
+                    "project": state.project,
+                    "status": state.status.value,
+                    "error": state.error,
+                }
+                for client in connected_clients:
+                    try:
+                        asyncio.create_task(client.send_json(msg))
+                    except Exception:
+                        pass
+        return handler
+    
+    process_manager.on("started", on_process_event("started"))
+    process_manager.on("stopped", on_process_event("stopped"))
+    process_manager.on("exited", on_process_event("exited"))
+    
     # Initialize orchestrator
     orchestrator = Orchestrator(
         config=config,
@@ -1060,6 +1085,59 @@ async def get_process_logs(process_id: str, lines: int = 100):
     return {"process_id": process_id, "logs": logs}
 
 
+@app.post("/processes/{process_id}/create-fix-task")
+async def create_fix_task_from_process(process_id: str):
+    """Create a task to fix a failed process error."""
+    from .db.models import TaskPriority as DBTaskPriority
+    
+    state = process_manager.get(process_id)
+    if not state:
+        raise HTTPException(status_code=404, detail=f"Process not found: {process_id}")
+    
+    if state.status.value != "failed":
+        raise HTTPException(status_code=400, detail="Process is not in failed state")
+    
+    # Get error details
+    error_msg = state.error or "Unknown error"
+    logs = process_manager.get_logs(process_id, lines=50)
+    
+    # Create task description
+    description = f"""Fix the {state.name} process error for {state.project}.
+
+Command that failed: {state.command}
+
+Error:
+{error_msg}
+
+Recent logs:
+{logs[-2000:] if len(logs) > 2000 else logs}
+"""
+    
+    task = task_repo.create(
+        project=state.project,
+        description=description,
+        priority=DBTaskPriority.HIGH,
+        metadata={"source": "process_error", "process_id": process_id},
+    )
+    
+    event_repo.log(
+        "task.created_from_error",
+        project=state.project,
+        task_id=task.id,
+        message=f"Created fix task from failed process: {state.name}",
+    )
+    
+    return {
+        "success": True,
+        "task": {
+            "id": task.id,
+            "project": task.project,
+            "description": task.description[:100] + "...",
+            "priority": task.priority.value,
+        },
+    }
+
+
 @app.post("/projects/{project}/detect-processes")
 async def detect_project_processes(project: str):
     """Auto-detect and register dev processes for a project."""
@@ -1084,6 +1162,77 @@ async def detect_project_processes(project: str):
             for p in detected
         ],
     }
+
+
+# =============================================================================
+# Port Management
+# =============================================================================
+
+@app.get("/ports")
+async def list_ports(project: str | None = None):
+    """List all port assignments."""
+    from .ports import get_port_manager
+    
+    pm = get_port_manager()
+    assignments = pm.list_assignments(project=project)
+    
+    return [
+        {
+            "project": a.project,
+            "service": a.service,
+            "port": a.port,
+            "in_use": a.in_use,
+        }
+        for a in assignments
+    ]
+
+
+class PortAssignRequest(BaseModel):
+    project: str
+    service: str
+    port: int | None = None  # If None, auto-assign
+
+
+@app.post("/ports/assign")
+async def assign_port(req: PortAssignRequest):
+    """Assign a port to a project service."""
+    from .ports import get_port_manager
+    
+    pm = get_port_manager()
+    
+    try:
+        port = pm.assign_port(req.project, req.service, preferred=req.port)
+        return {"success": True, "project": req.project, "service": req.service, "port": port}
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/ports/set")
+async def set_port(req: PortAssignRequest):
+    """Explicitly set a port for a service."""
+    from .ports import get_port_manager
+    
+    if not req.port:
+        raise HTTPException(status_code=400, detail="Port is required")
+    
+    pm = get_port_manager()
+    success = pm.set_port(req.project, req.service, req.port)
+    
+    if not success:
+        raise HTTPException(status_code=400, detail=f"Port {req.port} is not available")
+    
+    return {"success": True, "project": req.project, "service": req.service, "port": req.port}
+
+
+@app.delete("/ports/{project}/{service}")
+async def release_port(project: str, service: str):
+    """Release a port assignment."""
+    from .ports import get_port_manager
+    
+    pm = get_port_manager()
+    pm.release_port(project, service)
+    
+    return {"success": True, "released": f"{project}:{service}"}
 
 
 # =============================================================================

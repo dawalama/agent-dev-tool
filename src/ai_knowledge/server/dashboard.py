@@ -135,7 +135,10 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
                     <div id="panel-processes" class="p-4 hidden">
                         <div class="flex justify-between items-center mb-2">
                             <span class="text-xs text-gray-400">Dev servers & services</span>
-                            <button onclick="detectProcesses()" class="text-xs bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded">Auto-detect</button>
+                            <div class="flex gap-2">
+                                <button onclick="showPortsModal()" class="text-xs bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded">Ports</button>
+                                <button onclick="detectProcesses()" class="text-xs bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded">Auto-detect</button>
+                            </div>
                         </div>
                         <div id="processes-list" class="space-y-2">
                             <div class="text-gray-500 text-sm">No processes configured</div>
@@ -561,10 +564,12 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
 
             container.innerHTML = allProcesses.map(p => {
                 const isRunning = p.status === 'running';
-                const statusColor = isRunning ? 'text-green-400' : p.status === 'failed' ? 'text-red-400' : 'text-gray-400';
+                const isFailed = p.status === 'failed';
+                const statusColor = isRunning ? 'text-green-400' : isFailed ? 'text-red-400' : 'text-gray-400';
+                const borderClass = isFailed ? 'border border-red-500' : '';
                 
                 return `
-                    <div class="bg-gray-700 rounded p-2">
+                    <div class="bg-gray-700 rounded p-2 ${borderClass}">
                         <div class="flex justify-between items-center">
                             <div>
                                 <span class="font-medium text-sm">${p.project}/${p.name}</span>
@@ -573,7 +578,8 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
                             <span class="${statusColor} text-xs">${p.status}${p.pid ? ` (${p.pid})` : ''}</span>
                         </div>
                         <div class="text-gray-400 text-xs truncate mt-1">${p.command}</div>
-                        <div class="flex gap-2 mt-2">
+                        ${isFailed && p.error ? `<div class="text-red-400 text-xs mt-1 truncate" title="${p.error}">${p.error.split('\\n')[0]}</div>` : ''}
+                        <div class="flex gap-2 mt-2 flex-wrap">
                             ${isRunning ? `
                                 <button onclick="stopProcess('${p.id}')" class="text-xs bg-red-600 hover:bg-red-700 px-2 py-1 rounded">Stop</button>
                                 <button onclick="restartProcess('${p.id}')" class="text-xs bg-yellow-600 hover:bg-yellow-700 px-2 py-1 rounded">Restart</button>
@@ -582,6 +588,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
                             `}
                             <button onclick="viewProcessLogs('${p.id}')" class="text-xs bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded">Logs</button>
                             ${p.port && isRunning ? `<a href="http://localhost:${p.port}" target="_blank" class="text-xs bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded">Open</a>` : ''}
+                            ${isFailed ? `<button onclick="createFixTask('${p.id}')" class="text-xs bg-purple-600 hover:bg-purple-700 px-2 py-1 rounded">Fix with AI</button>` : ''}
                         </div>
                     </div>
                 `;
@@ -631,6 +638,14 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             if (result?.success) {
                 showNotification(`Detected ${result.detected.length} process(es)`);
                 loadProcesses();
+            }
+        }
+
+        async function createFixTask(processId) {
+            const result = await api(`/processes/${processId}/create-fix-task`, { method: 'POST' });
+            if (result?.success) {
+                showNotification(`Created fix task: ${result.task.id}`);
+                loadTasks();
             }
         }
 
@@ -778,6 +793,15 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             if (event.type?.startsWith('task.') || event.type?.startsWith('agent.')) {
                 loadTasks();
                 loadWorkers();
+            }
+            
+            // Refresh processes on process events
+            if (event.type?.startsWith('process.')) {
+                loadProcesses();
+                // Show notification for failures
+                if (event.type === 'process.exited' && event.status === 'failed') {
+                    showNotification(`Process failed: ${event.project}/${event.process_id}`);
+                }
             }
         }
 

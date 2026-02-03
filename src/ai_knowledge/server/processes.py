@@ -75,10 +75,11 @@ DEV_COMMANDS = {
 }
 
 
-def detect_dev_command(project_path: str) -> Optional[tuple[str, int]]:
+def detect_dev_command(project_path: str, assigned_port: Optional[int] = None) -> Optional[tuple[str, int]]:
     """Detect the appropriate dev command for a project.
     
-    Returns (command, default_port) or None.
+    Returns (command, port) or None.
+    If assigned_port is given, the command will use that port.
     """
     path = Path(project_path)
     
@@ -319,15 +320,40 @@ class ProcessManager:
         if process_id in self._subprocesses:
             del self._subprocesses[process_id]
         
+        # Extract error message if failed
+        error_msg = None
+        if exit_code != 0:
+            error_msg = self._extract_error(process_id)
+        
         # Update state
         state = self._processes.get(process_id)
         if state:
             state.status = ProcessStatus.FAILED if exit_code != 0 else ProcessStatus.STOPPED
             state.exit_code = exit_code
+            state.error = error_msg
             state.pid = None
             state.save()
             
             self._emit("exited", process_id, exit_code, state)
+    
+    def _extract_error(self, process_id: str, lines: int = 30) -> str:
+        """Extract error message from recent logs."""
+        logs = self.get_logs(process_id, lines=lines)
+        if not logs:
+            return "Process exited with error"
+        
+        # Look for common error patterns
+        error_lines = []
+        for line in logs.split("\n"):
+            line_lower = line.lower()
+            if any(kw in line_lower for kw in ["error", "exception", "failed", "cannot", "unable", "traceback"]):
+                error_lines.append(line)
+        
+        if error_lines:
+            return "\n".join(error_lines[-10:])  # Last 10 error lines
+        
+        # Just return last few lines
+        return "\n".join(logs.split("\n")[-10:])
     
     def get(self, process_id: str) -> Optional[ProcessState]:
         """Get a process by ID."""
@@ -359,9 +385,18 @@ class ProcessManager:
         return "\n".join(log_lines[-lines:])
     
     def auto_detect(self, project: str, project_path: str) -> list[ProcessState]:
-        """Auto-detect and register dev processes for a project."""
+        """Auto-detect and register dev processes for a project.
+        
+        Uses PortManager to assign non-conflicting ports.
+        """
+        from .ports import get_port_manager
+        
         detected = []
         path = Path(project_path)
+        port_manager = get_port_manager()
+        
+        # Detect services first, then assign ports
+        services_to_register = []
         
         # Check for frontend
         frontend_dirs = ["frontend", "client", "web", "ui"]
@@ -370,15 +405,13 @@ class ProcessManager:
             if frontend_path.exists():
                 result = detect_dev_command(str(frontend_path))
                 if result:
-                    cmd, port = result
-                    state = self.register(
-                        project=project,
-                        name="frontend",
-                        command=cmd,
-                        cwd=str(frontend_path),
-                        port=port,
-                    )
-                    detected.append(state)
+                    base_cmd, default_port = result
+                    services_to_register.append({
+                        "name": "frontend",
+                        "base_cmd": base_cmd,
+                        "cwd": str(frontend_path),
+                        "default_port": default_port,
+                    })
                 break
         
         # Check for backend
@@ -388,32 +421,78 @@ class ProcessManager:
             if backend_path.exists():
                 result = detect_dev_command(str(backend_path))
                 if result:
-                    cmd, port = result
-                    state = self.register(
-                        project=project,
-                        name="backend",
-                        command=cmd,
-                        cwd=str(backend_path),
-                        port=port,
-                    )
-                    detected.append(state)
+                    base_cmd, default_port = result
+                    services_to_register.append({
+                        "name": "backend",
+                        "base_cmd": base_cmd,
+                        "cwd": str(backend_path),
+                        "default_port": default_port,
+                    })
                 break
         
         # Check root for single-app projects
-        if not detected:
+        if not services_to_register:
             result = detect_dev_command(str(path))
             if result:
-                cmd, port = result
-                state = self.register(
-                    project=project,
-                    name="app",
-                    command=cmd,
-                    cwd=str(path),
-                    port=port,
-                )
-                detected.append(state)
+                base_cmd, default_port = result
+                services_to_register.append({
+                    "name": "app",
+                    "base_cmd": base_cmd,
+                    "cwd": str(path),
+                    "default_port": default_port,
+                })
+        
+        # Assign ports and register
+        for svc in services_to_register:
+            # Get or assign port
+            port = port_manager.assign_port(
+                project=project,
+                service=svc["name"],
+                preferred=svc["default_port"],
+            )
+            
+            # Adjust command to use assigned port
+            cmd = self._adjust_command_port(svc["base_cmd"], port)
+            
+            state = self.register(
+                project=project,
+                name=svc["name"],
+                command=cmd,
+                cwd=svc["cwd"],
+                port=port,
+            )
+            detected.append(state)
         
         return detected
+    
+    def _adjust_command_port(self, cmd: str, port: int) -> str:
+        """Adjust a dev command to use a specific port."""
+        import re
+        
+        # Handle common patterns
+        # npm run dev -- --port XXXX or vite --port XXXX
+        if "npm" in cmd or "vite" in cmd or "next" in cmd:
+            # Remove existing port args
+            cmd = re.sub(r'--port\s*\d+', '', cmd)
+            cmd = re.sub(r'-p\s*\d+', '', cmd)
+            return f"{cmd.strip()} --port {port}"
+        
+        # uvicorn --port XXXX
+        if "uvicorn" in cmd:
+            cmd = re.sub(r'--port\s*\d+', '', cmd)
+            return f"{cmd.strip()} --port {port}"
+        
+        # flask run --port XXXX
+        if "flask" in cmd:
+            cmd = re.sub(r'--port\s*\d+', '', cmd)
+            return f"{cmd.strip()} --port {port}"
+        
+        # django runserver XXXX
+        if "runserver" in cmd:
+            cmd = re.sub(r'runserver\s*\d*', 'runserver', cmd)
+            return f"{cmd.strip()} {port}"
+        
+        return cmd
     
     def stop_all(self):
         """Stop all running processes."""
