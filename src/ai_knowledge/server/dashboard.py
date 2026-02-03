@@ -809,6 +809,8 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
                         html += `<div class="flex justify-between items-center text-xs py-1 ${hasConflict ? 'text-red-300' : 'text-gray-400'}">
                             <span>${s.service}</span>
                             <div class="flex items-center gap-2">
+                                <button onclick="autoAssignPort('${s.project}', '${s.service}')" 
+                                        class="text-blue-400 hover:text-blue-300 text-xs">auto</button>
                                 <input type="number" value="${s.port}" 
                                        id="port-${key}"
                                        data-original="${s.port}"
