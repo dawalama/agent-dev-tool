@@ -144,7 +144,12 @@ def scrub(text: str) -> str:
 
 
 class ScrubberFileWrapper:
-    """File-like wrapper that scrubs content before writing."""
+    """File-like wrapper that scrubs content before writing.
+    
+    Note: This wrapper does NOT support fileno() so it cannot be used
+    directly with subprocess.Popen stdout/stderr. For subprocess output,
+    use scrub_file() after the process completes or read and scrub manually.
+    """
     
     def __init__(self, file, scrubber: Optional[SecretScrubber] = None):
         self._file = file
@@ -154,14 +159,42 @@ class ScrubberFileWrapper:
         scrubbed = self._scrubber.scrub(data)
         return self._file.write(scrubbed)
     
+    def writelines(self, lines):
+        for line in lines:
+            self.write(line)
+    
     def flush(self):
         return self._file.flush()
     
     def close(self):
         return self._file.close()
     
+    def fileno(self):
+        return self._file.fileno()
+    
     def __enter__(self):
         return self
     
     def __exit__(self, *args):
         self.close()
+
+
+def scrub_file(path: str, scrubber: Optional[SecretScrubber] = None) -> None:
+    """Scrub secrets from a file in-place."""
+    from pathlib import Path
+    
+    p = Path(path)
+    if not p.exists():
+        return
+    
+    s = scrubber or get_scrubber()
+    content = p.read_text()
+    scrubbed = s.scrub(content)
+    
+    if content != scrubbed:
+        p.write_text(scrubbed)
+
+
+def scrub_log_content(content: str) -> str:
+    """Scrub secrets from log content before displaying."""
+    return get_scrubber().scrub(content)

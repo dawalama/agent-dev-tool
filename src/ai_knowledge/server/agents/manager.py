@@ -14,7 +14,7 @@ from typing import Callable
 from pydantic import BaseModel, Field
 
 from ..config import Config, get_adt_home
-from ..scrubber import ScrubberFileWrapper, get_scrubber
+from ..scrubber import scrub_log_content
 
 
 class AgentStatus(str, Enum):
@@ -213,14 +213,14 @@ class AgentManager:
             if task:
                 cmd.extend(["--task", task])
         
-        # Open log file with secret scrubbing
-        raw_log_file = open(log_path, "a")
-        log_file = ScrubberFileWrapper(raw_log_file, get_scrubber())
+        # Open log file (scrubbing happens when reading logs, not writing)
+        log_file = open(log_path, "a")
         log_file.write(f"\n\n=== Agent started at {datetime.now().isoformat()} ===\n")
         log_file.write(f"Project: {project}\n")
         log_file.write(f"Provider: {provider}\n")
         log_file.write(f"Task: {task or 'none'}\n")
         log_file.write("=" * 50 + "\n\n")
+        log_file.flush()
         
         process = subprocess.Popen(
             cmd,
@@ -363,15 +363,16 @@ class AgentManager:
         return state
     
     def get_logs(self, project: str, lines: int = 100) -> str:
-        """Get recent log lines for an agent."""
+        """Get recent log lines for an agent (scrubbed for secrets)."""
         log_path = get_adt_home() / "logs" / "agents" / f"{project}.log"
         if not log_path.exists():
             return ""
         
-        # Read last N lines
+        # Read last N lines and scrub secrets
         content = log_path.read_text()
         log_lines = content.split("\n")
-        return "\n".join(log_lines[-lines:])
+        raw_logs = "\n".join(log_lines[-lines:])
+        return scrub_log_content(raw_logs)
     
     def cleanup_stopped(self) -> int:
         """Remove state files for stopped agents. Returns count removed."""
