@@ -114,6 +114,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
                     <div class="flex border-b border-gray-700">
                         <button onclick="showTab('activity')" id="tab-activity" class="px-4 py-2 text-sm tab-active">Activity</button>
                         <button onclick="showTab('workers')" id="tab-workers" class="px-4 py-2 text-sm tab-inactive">Workers</button>
+                        <button onclick="showTab('processes')" id="tab-processes" class="px-4 py-2 text-sm tab-inactive">Processes</button>
                     </div>
                     
                     <!-- Activity Tab -->
@@ -127,6 +128,17 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
                     <div id="panel-workers" class="p-4 hidden">
                         <div id="workers-list" class="space-y-2">
                             <div class="text-gray-500 text-sm">No active workers</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Processes Tab -->
+                    <div id="panel-processes" class="p-4 hidden">
+                        <div class="flex justify-between items-center mb-2">
+                            <span class="text-xs text-gray-400">Dev servers & services</span>
+                            <button onclick="detectProcesses()" class="text-xs bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded">Auto-detect</button>
+                        </div>
+                        <div id="processes-list" class="space-y-2">
+                            <div class="text-gray-500 text-sm">No processes configured</div>
                         </div>
                     </div>
                 </div>
@@ -260,10 +272,11 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
         }
 
         function showTab(tab) {
-            document.getElementById('tab-activity').className = tab === 'activity' ? 'px-4 py-2 text-sm tab-active' : 'px-4 py-2 text-sm tab-inactive';
-            document.getElementById('tab-workers').className = tab === 'workers' ? 'px-4 py-2 text-sm tab-active' : 'px-4 py-2 text-sm tab-inactive';
-            document.getElementById('panel-activity').classList.toggle('hidden', tab !== 'activity');
-            document.getElementById('panel-workers').classList.toggle('hidden', tab !== 'workers');
+            ['activity', 'workers', 'processes'].forEach(t => {
+                document.getElementById(`tab-${t}`).className = t === tab ? 'px-4 py-2 text-sm tab-active' : 'px-4 py-2 text-sm tab-inactive';
+                document.getElementById(`panel-${t}`).classList.toggle('hidden', t !== tab);
+            });
+            if (tab === 'processes') loadProcesses();
         }
 
         function selectProject(project) {
@@ -523,6 +536,102 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             showNotification('Worker stopped');
             loadWorkers();
             loadTasks();
+        }
+
+        // Process management
+        let allProcesses = [];
+
+        async function loadProcesses() {
+            const projectFilter = currentProject === 'all' ? null : currentProject;
+            const url = projectFilter ? `/processes?project=${projectFilter}` : '/processes';
+            const processes = await api(url);
+            if (!processes) return;
+            
+            allProcesses = processes;
+            renderProcesses();
+        }
+
+        function renderProcesses() {
+            const container = document.getElementById('processes-list');
+            
+            if (allProcesses.length === 0) {
+                container.innerHTML = '<div class="text-gray-500 text-sm">No processes configured. Click "Auto-detect" to find dev servers.</div>';
+                return;
+            }
+
+            container.innerHTML = allProcesses.map(p => {
+                const isRunning = p.status === 'running';
+                const statusColor = isRunning ? 'text-green-400' : p.status === 'failed' ? 'text-red-400' : 'text-gray-400';
+                
+                return `
+                    <div class="bg-gray-700 rounded p-2">
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <span class="font-medium text-sm">${p.project}/${p.name}</span>
+                                ${p.port ? `<span class="text-blue-400 text-xs ml-2">:${p.port}</span>` : ''}
+                            </div>
+                            <span class="${statusColor} text-xs">${p.status}${p.pid ? ` (${p.pid})` : ''}</span>
+                        </div>
+                        <div class="text-gray-400 text-xs truncate mt-1">${p.command}</div>
+                        <div class="flex gap-2 mt-2">
+                            ${isRunning ? `
+                                <button onclick="stopProcess('${p.id}')" class="text-xs bg-red-600 hover:bg-red-700 px-2 py-1 rounded">Stop</button>
+                                <button onclick="restartProcess('${p.id}')" class="text-xs bg-yellow-600 hover:bg-yellow-700 px-2 py-1 rounded">Restart</button>
+                            ` : `
+                                <button onclick="startProcess('${p.id}')" class="text-xs bg-green-600 hover:bg-green-700 px-2 py-1 rounded">Start</button>
+                            `}
+                            <button onclick="viewProcessLogs('${p.id}')" class="text-xs bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded">Logs</button>
+                            ${p.port && isRunning ? `<a href="http://localhost:${p.port}" target="_blank" class="text-xs bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded">Open</a>` : ''}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        async function startProcess(processId) {
+            const result = await api(`/processes/${processId}/start`, { method: 'POST' });
+            if (result?.success) {
+                showNotification('Process started');
+                loadProcesses();
+            }
+        }
+
+        async function stopProcess(processId) {
+            const result = await api(`/processes/${processId}/stop`, { method: 'POST' });
+            if (result?.success) {
+                showNotification('Process stopped');
+                loadProcesses();
+            }
+        }
+
+        async function restartProcess(processId) {
+            const result = await api(`/processes/${processId}/restart`, { method: 'POST' });
+            if (result?.success) {
+                showNotification('Process restarted');
+                loadProcesses();
+            }
+        }
+
+        async function viewProcessLogs(processId) {
+            const result = await api(`/processes/${processId}/logs?lines=50`);
+            if (result) {
+                document.getElementById('current-task-name').textContent = `Process: ${processId}`;
+                document.getElementById('output-panel').innerHTML = `<pre class="text-xs text-gray-300 whitespace-pre-wrap">${result.logs || 'No logs yet'}</pre>`;
+            }
+        }
+
+        async function detectProcesses() {
+            const project = currentProject === 'all' ? null : currentProject;
+            if (!project) {
+                showNotification('Select a project first');
+                return;
+            }
+            
+            const result = await api(`/projects/${project}/detect-processes`, { method: 'POST' });
+            if (result?.success) {
+                showNotification(`Detected ${result.detected.length} process(es)`);
+                loadProcesses();
+            }
         }
 
         function updateStats() {

@@ -54,6 +54,7 @@ task_repo: TaskRepository | None = None
 event_repo: EventRepository | None = None
 event_bus: EventBus | None = None
 orchestrator: Orchestrator | None = None
+process_manager = None
 telegram_bot = None
 auth_manager = None
 connected_clients: set[WebSocket] = set()
@@ -62,7 +63,7 @@ connected_clients: set[WebSocket] = set()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown logic."""
-    global config, agent_manager, task_queue, task_repo, event_repo, event_bus, orchestrator, telegram_bot, auth_manager
+    global config, agent_manager, task_queue, task_repo, event_repo, event_bus, orchestrator, process_manager, telegram_bot, auth_manager
     
     ensure_adt_home()
     
@@ -76,6 +77,10 @@ async def lifespan(app: FastAPI):
     task_queue = TaskQueue()  # Keep for backward compat, will migrate
     event_bus = get_event_bus()
     auth_manager = get_auth_manager()
+    
+    # Initialize process manager
+    from .processes import get_process_manager
+    process_manager = get_process_manager()
     
     # Initialize orchestrator
     orchestrator = Orchestrator(
@@ -146,6 +151,8 @@ async def lifespan(app: FastAPI):
         await orchestrator.stop()
     if telegram_bot:
         await telegram_bot.stop()
+    if process_manager:
+        process_manager.stop_all()
     event_bus.emit(EventType.SERVER_STOPPED)
     close_databases()
 
@@ -934,6 +941,149 @@ async def run_task_now(task_id: str, request: Request):
 async def task_stats():
     """Get queue statistics."""
     return task_repo.stats()
+
+
+# =============================================================================
+# Process Management (Dev Servers, etc.)
+# =============================================================================
+
+class ProcessRegisterRequest(BaseModel):
+    project: str
+    name: str
+    command: str
+    cwd: str
+    port: int | None = None
+
+
+@app.get("/processes")
+async def list_processes(project: str | None = None):
+    """List all managed processes."""
+    processes = process_manager.list(project=project)
+    return [
+        {
+            "id": p.id,
+            "project": p.project,
+            "name": p.name,
+            "type": p.process_type.value,
+            "command": p.command,
+            "status": p.status.value,
+            "pid": p.pid,
+            "port": p.port,
+            "started_at": p.started_at.isoformat() if p.started_at else None,
+            "error": p.error,
+        }
+        for p in processes
+    ]
+
+
+@app.post("/processes/register")
+async def register_process(req: ProcessRegisterRequest):
+    """Register a new process configuration."""
+    state = process_manager.register(
+        project=req.project,
+        name=req.name,
+        command=req.command,
+        cwd=req.cwd,
+        port=req.port,
+    )
+    return {"success": True, "process": {"id": state.id, "status": state.status.value}}
+
+
+@app.post("/processes/{process_id}/start")
+async def start_process(process_id: str):
+    """Start a registered process."""
+    try:
+        state = process_manager.start(process_id)
+        event_repo.log(
+            "process.started",
+            project=state.project,
+            message=f"Started {state.name}: {state.command}",
+        )
+        return {
+            "success": True,
+            "process": {
+                "id": state.id,
+                "status": state.status.value,
+                "pid": state.pid,
+                "port": state.port,
+            },
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/processes/{process_id}/stop")
+async def stop_process(process_id: str, force: bool = False):
+    """Stop a running process."""
+    try:
+        state = process_manager.stop(process_id, force=force)
+        event_repo.log(
+            "process.stopped",
+            project=state.project,
+            message=f"Stopped {state.name}",
+        )
+        return {"success": True, "process": {"id": state.id, "status": state.status.value}}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/processes/{process_id}/restart")
+async def restart_process(process_id: str):
+    """Restart a process."""
+    try:
+        state = process_manager.restart(process_id)
+        event_repo.log(
+            "process.restarted",
+            project=state.project,
+            message=f"Restarted {state.name}",
+        )
+        return {
+            "success": True,
+            "process": {
+                "id": state.id,
+                "status": state.status.value,
+                "pid": state.pid,
+            },
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/processes/{process_id}/logs")
+async def get_process_logs(process_id: str, lines: int = 100):
+    """Get logs for a process."""
+    state = process_manager.get(process_id)
+    if not state:
+        raise HTTPException(status_code=404, detail=f"Process not found: {process_id}")
+    
+    logs = process_manager.get_logs(process_id, lines=lines)
+    return {"process_id": process_id, "logs": logs}
+
+
+@app.post("/projects/{project}/detect-processes")
+async def detect_project_processes(project: str):
+    """Auto-detect and register dev processes for a project."""
+    from ..store import load_config as load_adt_config
+    
+    adt_config = load_adt_config()
+    proj = next((p for p in adt_config.projects if p.name == project), None)
+    if not proj:
+        raise HTTPException(status_code=404, detail=f"Project not found: {project}")
+    
+    detected = process_manager.auto_detect(project, str(proj.path))
+    
+    return {
+        "success": True,
+        "detected": [
+            {
+                "id": p.id,
+                "name": p.name,
+                "command": p.command,
+                "port": p.port,
+            }
+            for p in detected
+        ],
+    }
 
 
 # =============================================================================
