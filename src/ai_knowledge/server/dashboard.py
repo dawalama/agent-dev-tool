@@ -315,7 +315,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
                 document.getElementById(`tab-${t}`).className = t === tab ? 'px-4 py-2 text-sm tab-active' : 'px-4 py-2 text-sm tab-inactive';
                 document.getElementById(`panel-${t}`).classList.toggle('hidden', t !== tab);
             });
-            if (tab === 'processes') loadProcesses();
+            if (tab === 'processes') loadProcesses(true);  // Force refresh when switching to tab
             if (tab === 'system') loadServerLogs();
         }
 
@@ -326,6 +326,8 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
                 btn.className = btn.id === `project-${project}` ? 'px-3 py-1 rounded text-sm bg-blue-600' : 'px-3 py-1 rounded text-sm bg-gray-700 hover:bg-gray-600';
             });
             renderTasks();
+            // Re-render processes if we have them cached (no API call needed)
+            if (allProcesses.length > 0) renderProcesses();
         }
 
         async function loadProjects() {
@@ -590,8 +592,14 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
         // Process management
         let allProcesses = [];
 
-        async function loadProcesses() {
-            // Always load ALL processes so we can show running ones from other projects
+        async function loadProcesses(forceRefresh = false) {
+            // Use cached data if available and not forcing refresh
+            if (!forceRefresh && allProcesses.length > 0) {
+                renderProcesses();
+                return;
+            }
+            
+            // Fetch all processes
             const processes = await api('/processes');
             if (!processes) return;
             
@@ -661,7 +669,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             const result = await api(`/processes/${processId}/start`, { method: 'POST' });
             if (result?.success) {
                 showNotification('Process started');
-                loadProcesses();
+                loadProcesses(true);
             }
         }
 
@@ -669,7 +677,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             const result = await api(`/processes/${processId}/stop`, { method: 'POST' });
             if (result?.success) {
                 showNotification('Process stopped');
-                loadProcesses();
+                loadProcesses(true);
             }
         }
 
@@ -677,7 +685,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             const result = await api(`/processes/${processId}/restart`, { method: 'POST' });
             if (result?.success) {
                 showNotification('Process restarted');
-                loadProcesses();
+                loadProcesses(true);
             }
         }
 
@@ -699,7 +707,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             const result = await api(`/projects/${project}/detect-processes`, { method: 'POST' });
             if (result?.success) {
                 showNotification(`Detected ${result.detected.length} process(es)`);
-                loadProcesses();
+                loadProcesses(true);
             }
         }
 
@@ -888,7 +896,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             
             pendingPortChanges = {};
             showPortsModal();
-            loadProcesses();
+            loadProcesses(true);
         }
         
         async function autoAssignPort(project, service) {
@@ -896,7 +904,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             if (result && result.port) {
                 showNotification(`Assigned port ${result.port} to ${project}/${service}`);
                 showPortsModal();
-                loadProcesses();
+                loadProcesses(true);
             } else {
                 showNotification('Failed to assign port', 'error');
             }
@@ -1050,7 +1058,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             
             // Refresh processes on process events
             if (event.type?.startsWith('process.')) {
-                loadProcesses();
+                loadProcesses(true);
                 // Show notification for failures
                 if (event.type === 'process.exited' && event.status === 'failed') {
                     showNotification(`Process failed: ${event.project}/${event.process_id}`);
