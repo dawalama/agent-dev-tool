@@ -545,9 +545,8 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
         let allProcesses = [];
 
         async function loadProcesses() {
-            const projectFilter = currentProject === 'all' ? null : currentProject;
-            const url = projectFilter ? `/processes?project=${projectFilter}` : '/processes';
-            const processes = await api(url);
+            // Always load ALL processes so we can show running ones from other projects
+            const processes = await api('/processes');
             if (!processes) return;
             
             allProcesses = processes;
@@ -557,12 +556,27 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
         function renderProcesses() {
             const container = document.getElementById('processes-list');
             
-            if (allProcesses.length === 0) {
+            // Filter by project but always show running processes from any project
+            let filtered = allProcesses;
+            if (currentProject !== 'all') {
+                filtered = allProcesses.filter(p => 
+                    p.project === currentProject || p.status === 'running'
+                );
+            }
+            
+            if (filtered.length === 0) {
                 container.innerHTML = '<div class="text-gray-500 text-sm">No processes configured. Click "Auto-detect" to find dev servers.</div>';
                 return;
             }
+            
+            // Sort: running first, then by project
+            filtered.sort((a, b) => {
+                if (a.status === 'running' && b.status !== 'running') return -1;
+                if (b.status === 'running' && a.status !== 'running') return 1;
+                return a.project.localeCompare(b.project);
+            });
 
-            container.innerHTML = allProcesses.map(p => {
+            container.innerHTML = filtered.map(p => {
                 const isRunning = p.status === 'running';
                 const isFailed = p.status === 'failed';
                 const isIdle = p.status === 'idle';
