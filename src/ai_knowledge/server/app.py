@@ -1228,6 +1228,7 @@ class PortAssignRequest(BaseModel):
     project: str
     service: str
     port: int | None = None  # If None, auto-assign
+    force_new: bool = False  # Force finding a new port (for conflict resolution)
 
 
 @app.post("/ports/assign")
@@ -1238,7 +1239,20 @@ async def assign_port(req: PortAssignRequest):
     pm = get_port_manager()
     
     try:
-        port = pm.assign_port(req.project, req.service, preferred=req.port)
+        port = pm.assign_port(req.project, req.service, preferred=req.port, force_new=req.force_new)
+        
+        # Also update the process command if exists
+        process_id = f"{req.project}-{req.service}"
+        if process_id in state.process_manager._processes:
+            proc_state = state.process_manager._processes[process_id]
+            old_port = proc_state.port
+            if old_port != port:
+                proc_state.port = port
+                # Update command with new port
+                from .processes import ProcessManager
+                proc_state.command = state.process_manager._update_command_port(proc_state.command, port)
+                state.process_manager._save_state()
+        
         return {"success": True, "project": req.project, "service": req.service, "port": port}
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))

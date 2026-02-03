@@ -676,33 +676,93 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
 
         async function showPortsModal() {
             const ports = await api('/ports');
+            const processes = await api('/processes');
             if (!ports) return;
             
-            let html = '<div class="space-y-2 max-h-64 overflow-y-auto">';
+            // Build a map of which processes are running
+            const runningPorts = new Set();
+            (processes || []).forEach(p => {
+                if (p.status === 'running' && p.port) runningPorts.add(p.port);
+            });
+            
+            // Find conflicts - group by port
+            const portMap = {};
+            ports.forEach(p => {
+                if (!portMap[p.port]) portMap[p.port] = [];
+                portMap[p.port].push(p);
+            });
+            
+            // Identify conflicts (multiple services on same port)
+            const conflicts = Object.entries(portMap).filter(([_, services]) => services.length > 1);
+            const conflictPorts = new Set(conflicts.map(([port]) => parseInt(port)));
+            
+            let html = '<div class="space-y-3 max-h-96 overflow-y-auto">';
             
             if (ports.length === 0) {
                 html += '<div class="text-gray-400 text-sm">No port assignments yet. Auto-detect processes first.</div>';
             } else {
-                html += ports.map(p => `
-                    <div class="flex justify-between items-center bg-gray-700 rounded p-2">
-                        <div>
-                            <span class="text-sm">${p.project}/${p.service}</span>
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <input type="number" value="${p.port}" 
-                                   class="w-20 bg-gray-600 rounded px-2 py-1 text-sm text-center"
-                                   onchange="updatePort('${p.project}', '${p.service}', this.value)">
-                            <span class="${p.in_use ? 'text-green-400' : 'text-gray-400'} text-xs">${p.in_use ? '● in use' : '○ free'}</span>
-                        </div>
-                    </div>
-                `).join('');
+                // Show conflicts first
+                if (conflicts.length > 0) {
+                    html += '<div class="mb-3 p-2 bg-red-900/30 border border-red-700 rounded">';
+                    html += '<div class="text-red-400 text-sm font-semibold mb-2">⚠ Port Conflicts</div>';
+                    conflicts.forEach(([port, services]) => {
+                        const isActive = runningPorts.has(parseInt(port));
+                        html += `<div class="mb-2 pl-2 border-l-2 border-red-600">`;
+                        html += `<div class="text-sm text-gray-300">Port ${port} ${isActive ? '<span class="text-green-400">● active</span>' : ''}</div>`;
+                        services.forEach(s => {
+                            html += `<div class="flex justify-between items-center text-xs text-gray-400 mt-1">
+                                <span>${s.project}/${s.service}</span>
+                                <button onclick="autoAssignPort('${s.project}', '${s.service}')" 
+                                        class="text-blue-400 hover:text-blue-300">reassign</button>
+                            </div>`;
+                        });
+                        html += '</div>';
+                    });
+                    html += '</div>';
+                }
+                
+                // Show all assignments grouped by project
+                const byProject = {};
+                ports.forEach(p => {
+                    if (!byProject[p.project]) byProject[p.project] = [];
+                    byProject[p.project].push(p);
+                });
+                
+                Object.entries(byProject).sort().forEach(([project, services]) => {
+                    html += `<div class="bg-gray-700/50 rounded p-2">`;
+                    html += `<div class="text-sm font-medium text-gray-300 mb-1">${project}</div>`;
+                    services.forEach(s => {
+                        const hasConflict = conflictPorts.has(s.port);
+                        const isActive = runningPorts.has(s.port);
+                        html += `<div class="flex justify-between items-center text-xs py-1 ${hasConflict ? 'text-red-300' : 'text-gray-400'}">
+                            <span>${s.service}</span>
+                            <div class="flex items-center gap-2">
+                                <input type="number" value="${s.port}" 
+                                       class="w-16 bg-gray-600 rounded px-2 py-1 text-center ${hasConflict ? 'border border-red-500' : ''}"
+                                       onchange="updatePort('${s.project}', '${s.service}', this.value)">
+                                ${isActive ? '<span class="text-green-400">●</span>' : ''}
+                            </div>
+                        </div>`;
+                    });
+                    html += '</div>';
+                });
             }
             
             html += '</div>';
             
-            // Simple modal using output panel for now
             document.getElementById('current-task-name').textContent = 'Port Assignments';
             document.getElementById('output-panel').innerHTML = html;
+        }
+        
+        async function autoAssignPort(project, service) {
+            const result = await api(`/ports/assign`, 'POST', { project, service, force_new: true });
+            if (result && result.port) {
+                showNotification(`Assigned port ${result.port} to ${project}/${service}`);
+                showPortsModal();
+                loadProcesses();
+            } else {
+                showNotification('Failed to assign port', 'error');
+            }
         }
 
         async function updatePort(project, service, port) {

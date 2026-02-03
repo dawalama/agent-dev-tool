@@ -87,26 +87,29 @@ class PortManager:
         project: str, 
         service: str, 
         preferred: Optional[int] = None,
+        force_new: bool = False,
     ) -> int:
         """Assign a port to a project service.
         
         If preferred port is given and available, use it.
         Otherwise, find the next available port.
+        If force_new=True, always find a new port (for resolving conflicts).
         """
         key = self._assignment_key(project, service)
         
-        # Check if already assigned
-        existing = self.registry.assignments.get(key)
-        if existing and is_port_available(existing.port):
-            return existing.port
+        # Check if already assigned (skip if forcing new)
+        if not force_new:
+            existing = self.registry.assignments.get(key)
+            if existing and is_port_available(existing.port):
+                return existing.port
         
-        # Try preferred port
-        if preferred and preferred not in self.registry.reserved:
+        # Try preferred port (skip if forcing new)
+        if not force_new and preferred and preferred not in self.registry.reserved:
             if is_port_available(preferred):
                 self._save_assignment(key, project, service, preferred)
                 return preferred
         
-        # Find next available
+        # Find next available (exclude all used ports)
         port = find_available_port(
             self.registry.range_start,
             self.registry.range_end,
