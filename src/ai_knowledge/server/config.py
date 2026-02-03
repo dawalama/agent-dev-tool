@@ -103,11 +103,19 @@ class ProjectOverride(BaseModel):
     preferred_provider: str | None = None
 
 
+class TLSConfig(BaseModel):
+    """TLS/SSL configuration."""
+    enabled: bool = False
+    cert_file: str | None = None
+    key_file: str | None = None
+    
+
 class ServerSettings(BaseModel):
     """Server configuration."""
     host: str = "127.0.0.1"
     port: int = 8420
     secret_key: str | None = None
+    tls: TLSConfig = Field(default_factory=TLSConfig)
 
 
 class Config(BaseModel):

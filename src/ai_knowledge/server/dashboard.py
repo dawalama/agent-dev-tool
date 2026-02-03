@@ -452,16 +452,24 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             }
             
             const tasksHtml = tasks.map(t => `
-                <div class="bg-gray-700 rounded p-3 priority-${t.priority}">
+                <div class="bg-gray-700 rounded p-3 priority-${t.priority} ${t.status === 'failed' ? 'border border-red-500' : ''}">
                     <div class="flex justify-between items-center">
                         <span class="text-xs text-gray-400">${t.id}</span>
                         <span class="status-${t.status} text-xs">${t.status}</span>
                     </div>
-                    <div class="font-medium text-sm mt-1 text-gray-900">${t.description}</div>
+                    <div class="font-medium text-sm mt-1 text-gray-900">${t.description.slice(0, 60)}${t.description.length > 60 ? '...' : ''}</div>
+                    ${t.error ? `<div class="text-red-400 text-xs mt-1 truncate">${t.error}</div>` : ''}
                     <div class="flex justify-between items-center mt-2">
                         <span class="text-xs text-gray-600">${t.project}</span>
-                        ${t.status === 'pending' ? 
-                            `<button onclick="cancelTask('${t.id}')" class="text-xs bg-red-600 hover:bg-red-700 px-2 py-1 rounded text-white">Cancel</button>` : ''}
+                        <div class="flex gap-1">
+                            ${t.status === 'pending' ? `
+                                <button onclick="runTaskNow('${t.id}')" class="text-xs bg-green-600 hover:bg-green-700 px-2 py-1 rounded text-white">Run</button>
+                                <button onclick="cancelTask('${t.id}')" class="text-xs bg-red-600 hover:bg-red-700 px-2 py-1 rounded text-white">Cancel</button>
+                            ` : ''}
+                            ${t.status === 'failed' ? `
+                                <button onclick="retryTask('${t.id}')" class="text-xs bg-yellow-600 hover:bg-yellow-700 px-2 py-1 rounded text-white">Retry</button>
+                            ` : ''}
+                        </div>
                     </div>
                 </div>
             `).join('');
@@ -519,6 +527,42 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
         async function cancelTask(taskId) {
             await api(`/tasks/${taskId}/cancel`, { method: 'POST' });
             loadTasks();
+        }
+
+        async function retryTask(taskId) {
+            const result = await api(`/tasks/${taskId}/retry`, { method: 'POST' });
+            if (result.success) {
+                showNotification(`Task retried: ${result.new_task.id}`);
+                loadTasks();
+            }
+        }
+
+        async function runTaskNow(taskId) {
+            try {
+                const result = await api(`/tasks/${taskId}/run`, { method: 'POST' });
+                if (result.success) {
+                    showNotification(`Agent spawned for task ${taskId}`);
+                    loadTasks();
+                    loadAgents();
+                }
+            } catch (e) {
+                showNotification(`Failed to run task: ${e.message}`, 'error');
+            }
+        }
+
+        function showNotification(message, type = 'success') {
+            const eventsDiv = document.getElementById('events-list');
+            if (eventsDiv.querySelector('.text-gray-500')) {
+                eventsDiv.innerHTML = '';
+            }
+            
+            const color = type === 'error' ? 'text-red-400' : 'text-green-400';
+            const time = new Date().toLocaleTimeString();
+            const html = `<div class="fade-in text-xs">
+                <span class="text-gray-500">${time}</span>
+                <span class="${color}">${message}</span>
+            </div>`;
+            eventsDiv.insertAdjacentHTML('afterbegin', html);
         }
 
         function viewLogs(project) {

@@ -1158,11 +1158,42 @@ def server_start(
     port: Annotated[int, typer.Option("--port", "-p", help="Port to bind")] = 8420,
     daemon: Annotated[bool, typer.Option("--daemon", "-d", help="Run in background")] = False,
     reload: Annotated[bool, typer.Option("--reload", "-r", help="Auto-reload on changes")] = False,
+    tls: Annotated[bool, typer.Option("--tls", help="Enable TLS (uses config or auto-gen certs)")] = False,
+    cert_file: Annotated[Optional[str], typer.Option("--cert", help="TLS certificate file")] = None,
+    key_file: Annotated[Optional[str], typer.Option("--key", help="TLS private key file")] = None,
 ):
     """Start the ADT Command Center server."""
-    from .server.config import ensure_adt_home
+    from .server.config import ensure_adt_home, Config
     
     ensure_adt_home()
+    config = Config.load()
+    
+    # Determine TLS settings
+    use_tls = tls or config.server.tls.enabled
+    ssl_cert = cert_file or (config.server.tls.cert_file if config.server.tls.enabled else None)
+    ssl_key = key_file or (config.server.tls.key_file if config.server.tls.enabled else None)
+    
+    protocol = "https" if use_tls else "http"
+    ws_protocol = "wss" if use_tls else "ws"
+    
+    # Build uvicorn command
+    uvicorn_args = [
+        "ai_knowledge.server.app:app",
+        "--host", host,
+        "--port", str(port),
+    ]
+    
+    if use_tls:
+        if ssl_cert and ssl_key:
+            uvicorn_args.extend(["--ssl-certfile", ssl_cert, "--ssl-keyfile", ssl_key])
+        else:
+            rprint("[yellow]Warning:[/yellow] TLS enabled but no cert/key provided.")
+            rprint("         Generate self-signed certs or configure in ~/.adt/config.yml")
+            rprint("")
+            rprint("Generate self-signed cert:")
+            rprint("  openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes")
+            rprint("")
+            raise typer.Exit(1)
     
     if daemon:
         # Run in background
@@ -1172,12 +1203,11 @@ def server_start(
         log_path = Path.home() / ".adt" / "logs" / "server.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         
+        cmd = [sys.executable, "-m", "uvicorn"] + uvicorn_args
+        
         with open(log_path, "a") as log_file:
             process = subprocess.Popen(
-                [sys.executable, "-m", "uvicorn", 
-                 "ai_knowledge.server.app:app",
-                 "--host", host,
-                 "--port", str(port)],
+                cmd,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
@@ -1189,27 +1219,37 @@ def server_start(
         
         rprint(f"[green]✓[/green] Server started in background")
         rprint(f"   PID: {process.pid}")
-        rprint(f"   URL: http://{host}:{port}")
+        rprint(f"   URL: {protocol}://{host}:{port}")
         rprint(f"   Logs: {log_path}")
+        if use_tls:
+            rprint(f"   TLS: enabled")
         rprint("")
         rprint(f"Stop with: adt server stop")
         return
     
     rprint(f"[bold]Starting ADT Command Center...[/bold]")
-    rprint(f"  URL: http://{host}:{port}")
-    rprint(f"  API docs: http://{host}:{port}/docs")
-    rprint(f"  WebSocket: ws://{host}:{port}/ws")
+    rprint(f"  URL: {protocol}://{host}:{port}")
+    rprint(f"  API docs: {protocol}://{host}:{port}/docs")
+    rprint(f"  WebSocket: {ws_protocol}://{host}:{port}/ws")
+    if use_tls:
+        rprint(f"  TLS: enabled")
     rprint("")
     rprint("[dim]Press Ctrl+C to stop[/dim]")
     rprint("")
     
     import uvicorn
-    uvicorn.run(
-        "ai_knowledge.server.app:app",
-        host=host,
-        port=port,
-        reload=reload,
-    )
+    
+    run_kwargs = {
+        "host": host,
+        "port": port,
+        "reload": reload,
+    }
+    
+    if use_tls and ssl_cert and ssl_key:
+        run_kwargs["ssl_certfile"] = ssl_cert
+        run_kwargs["ssl_keyfile"] = ssl_key
+    
+    uvicorn.run("ai_knowledge.server.app:app", **run_kwargs)
 
 
 @server_app.command("status")

@@ -22,6 +22,8 @@ from .vault import get_secret
 from .auth import get_auth_manager, TokenInfo, Role
 from .audit import audit, AuditAction, get_audit_logger
 from .middleware import AuthMiddleware
+from .db import init_databases, close_databases, TaskRepository, EventRepository
+from .orchestrator import Orchestrator, set_orchestrator
 
 
 # Pydantic models for API
@@ -46,7 +48,10 @@ class AssignRequest(BaseModel):
 config: Config | None = None
 agent_manager: AgentManager | None = None
 task_queue: TaskQueue | None = None
+task_repo: TaskRepository | None = None
+event_repo: EventRepository | None = None
 event_bus: EventBus | None = None
+orchestrator: Orchestrator | None = None
 telegram_bot = None
 auth_manager = None
 connected_clients: set[WebSocket] = set()
@@ -55,14 +60,29 @@ connected_clients: set[WebSocket] = set()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown logic."""
-    global config, agent_manager, task_queue, event_bus, telegram_bot, auth_manager
+    global config, agent_manager, task_queue, task_repo, event_repo, event_bus, orchestrator, telegram_bot, auth_manager
     
     ensure_adt_home()
+    
+    # Initialize SQLite databases
+    init_databases()
+    task_repo = TaskRepository()
+    event_repo = EventRepository()
+    
     config = Config.load()
     agent_manager = AgentManager(config)
-    task_queue = TaskQueue()
+    task_queue = TaskQueue()  # Keep for backward compat, will migrate
     event_bus = get_event_bus()
     auth_manager = get_auth_manager()
+    
+    # Initialize orchestrator
+    orchestrator = Orchestrator(
+        config=config,
+        agent_manager=agent_manager,
+        task_repo=task_repo,
+        event_repo=event_repo,
+    )
+    set_orchestrator(orchestrator)
     
     # Create initial admin token if none exist
     if not auth_manager.has_any_tokens():
@@ -110,15 +130,22 @@ async def lifespan(app: FastAPI):
             )
             await telegram_bot.start()
     
+    # Start the orchestrator (auto-assigns tasks to agents)
+    if config.agents.auto_spawn:
+        await orchestrator.start()
+    
     # Emit server started event
     event_bus.emit(EventType.SERVER_STARTED)
     
     yield
     
     # Cleanup
+    if orchestrator:
+        await orchestrator.stop()
     if telegram_bot:
         await telegram_bot.stop()
     event_bus.emit(EventType.SERVER_STOPPED)
+    close_databases()
 
 
 async def handle_telegram_command(command: str, args: str, user_id: int) -> str:
@@ -378,20 +405,21 @@ class RetryRequest(BaseModel):
 
 
 @app.post("/agents/{project}/retry")
-async def retry_agent(project: str, request: RetryRequest | None = None):
+async def retry_agent(project: str, request: Request, body: RetryRequest | None = None):
     """Retry a failed agent with optional new task."""
     agent = agent_manager.get(project)
     
     if not agent:
         raise HTTPException(status_code=404, detail=f"Agent not found: {project}")
     
-    if agent.status != AgentStatus.ERROR:
-        raise HTTPException(status_code=400, detail=f"Agent is not in error state: {agent.status}")
+    # Allow retry from error or stopped state
+    if agent.status not in (AgentStatus.ERROR, AgentStatus.STOPPED):
+        raise HTTPException(status_code=400, detail=f"Agent cannot be retried from state: {agent.status}")
     
     # Get task - use new one if provided, otherwise use the previous task
     task = None
-    if request and request.task:
-        task = request.task
+    if body and body.task:
+        task = body.task
     elif agent.current_task:
         task = agent.current_task
     
@@ -401,7 +429,25 @@ async def retry_agent(project: str, request: RetryRequest | None = None):
         
         # Respawn with task
         state = agent_manager.spawn(project, task=task)
+        
+        # Log to SQLite
+        event_repo.log(
+            "agent.retry",
+            project=project,
+            message=f"Agent retried with task: {task[:50] if task else 'none'}",
+        )
+        
         event_bus.emit(EventType.AGENT_STARTED, project=project, task=task)
+        
+        token_info = getattr(request.state, "token_info", None)
+        audit(
+            AuditAction.AGENT_RETRY,
+            actor_type="user" if token_info else "system",
+            actor_id=token_info.id if token_info else None,
+            resource_type="agent",
+            resource_id=project,
+            channel="api",
+        )
         
         return {
             "success": True,
@@ -479,12 +525,21 @@ async def list_tasks(
     include_completed: bool = False,
 ):
     """List tasks in the queue."""
-    status_filter = TaskStatus(status) if status else None
-    tasks = task_queue.list(
-        project=project,
-        status=status_filter,
-        include_completed=include_completed,
-    )
+    from .db.models import TaskStatus as DBTaskStatus
+    
+    status_filter = None
+    if status:
+        try:
+            status_filter = DBTaskStatus(status)
+        except ValueError:
+            pass
+    
+    # Use SQLite repository
+    tasks = task_repo.list(status=status_filter, project=project, limit=100)
+    
+    # Filter out completed unless requested
+    if not include_completed:
+        tasks = [t for t in tasks if t.status not in (DBTaskStatus.COMPLETED, DBTaskStatus.CANCELLED)]
     
     return [
         {
@@ -505,17 +560,28 @@ async def list_tasks(
 
 
 @app.post("/tasks")
-async def create_task(req: TaskRequest):
+async def create_task(req: TaskRequest, request: Request):
     """Create a new task."""
+    from .db.models import TaskPriority as DBTaskPriority
+    
     try:
-        priority = TaskPriority(req.priority)
+        priority = DBTaskPriority(req.priority)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid priority: {req.priority}")
     
-    task = task_queue.create(
+    # Use SQLite repository
+    task = task_repo.create(
         project=req.project,
         description=req.description,
         priority=priority,
+    )
+    
+    # Log event to SQLite
+    event_repo.log(
+        "task.created",
+        project=req.project,
+        task_id=task.id,
+        message=f"Task created: {req.description[:50]}",
     )
     
     event_bus.emit(
@@ -523,6 +589,17 @@ async def create_task(req: TaskRequest):
         project=req.project,
         task_id=task.id,
         description=req.description,
+    )
+    
+    token_info = getattr(request.state, "token_info", None)
+    audit(
+        AuditAction.TASK_CREATED,
+        actor_type="user" if token_info else "system",
+        actor_id=token_info.id if token_info else None,
+        resource_type="task",
+        resource_id=task.id,
+        channel="api",
+        metadata={"project": req.project, "priority": req.priority},
     )
     
     return {
@@ -540,7 +617,7 @@ async def create_task(req: TaskRequest):
 @app.get("/tasks/{task_id}")
 async def get_task(task_id: str):
     """Get a task by ID."""
-    task = task_queue.get(task_id)
+    task = task_repo.get(task_id)
     if not task:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
     
@@ -552,25 +629,147 @@ async def get_task(task_id: str):
         "status": task.status.value,
         "assigned_to": task.assigned_to,
         "created_at": task.created_at.isoformat(),
+        "started_at": task.started_at.isoformat() if task.started_at else None,
+        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
         "result": task.result,
         "error": task.error,
+        "retry_count": task.retry_count,
     }
 
 
 @app.post("/tasks/{task_id}/cancel")
-async def cancel_task(task_id: str):
+async def cancel_task(task_id: str, request: Request):
     """Cancel a task."""
-    task = task_queue.cancel(task_id)
+    task = task_repo.cancel(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task not found or cannot be cancelled: {task_id}")
+    
+    event_repo.log(
+        "task.cancelled",
+        project=task.project,
+        task_id=task.id,
+        message="Task cancelled",
+    )
+    
+    token_info = getattr(request.state, "token_info", None)
+    audit(
+        AuditAction.TASK_CANCELLED,
+        actor_type="user" if token_info else "system",
+        actor_id=token_info.id if token_info else None,
+        resource_type="task",
+        resource_id=task_id,
+        channel="api",
+    )
+    
+    return {"success": True, "task_id": task_id}
+
+
+class TaskRetryRequest(BaseModel):
+    description: str | None = None  # Optional new description
+    priority: str | None = None  # Optional new priority
+
+
+@app.post("/tasks/{task_id}/retry")
+async def retry_task(task_id: str, request: Request, body: TaskRetryRequest | None = None):
+    """Retry a failed task (creates a new task with same or updated params)."""
+    from .db.models import TaskPriority as DBTaskPriority
+    
+    original = task_repo.get(task_id)
+    if not original:
+        raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+    
+    # Use provided values or fall back to original
+    description = body.description if body and body.description else original.description
+    priority = original.priority
+    if body and body.priority:
+        try:
+            priority = DBTaskPriority(body.priority)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid priority: {body.priority}")
+    
+    # Create new task
+    new_task = task_repo.create(
+        project=original.project,
+        description=description,
+        priority=priority,
+        metadata={"retried_from": task_id},
+    )
+    
+    event_repo.log(
+        "task.retried",
+        project=original.project,
+        task_id=new_task.id,
+        message=f"Retried from {task_id}",
+    )
+    
+    event_bus.emit(
+        EventType.TASK_CREATED,
+        project=original.project,
+        task_id=new_task.id,
+        description=description,
+    )
+    
+    return {
+        "success": True,
+        "original_task_id": task_id,
+        "new_task": {
+            "id": new_task.id,
+            "project": new_task.project,
+            "description": new_task.description,
+            "priority": new_task.priority.value,
+            "status": new_task.status.value,
+        },
+    }
+
+
+@app.post("/tasks/{task_id}/run")
+async def run_task_now(task_id: str, request: Request):
+    """Immediately run a pending task by spawning an agent."""
+    task = task_repo.get(task_id)
     if not task:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
     
-    return {"success": True, "task_id": task_id}
+    if task.status != TaskStatus.PENDING:
+        raise HTTPException(status_code=400, detail=f"Task is not pending: {task.status}")
+    
+    # Claim the task
+    claimed = task_repo.claim_next(task.project)
+    if not claimed or claimed.id != task_id:
+        raise HTTPException(status_code=409, detail="Task was claimed by another process")
+    
+    try:
+        # Spawn agent
+        state = agent_manager.spawn(
+            project=task.project,
+            task=task.description,
+        )
+        
+        event_repo.log(
+            "task.started",
+            project=task.project,
+            task_id=task_id,
+            message=f"Agent spawned: {task.description[:50]}",
+        )
+        
+        return {
+            "success": True,
+            "task_id": task_id,
+            "agent": {
+                "project": state.project,
+                "status": state.status.value,
+                "pid": state.pid,
+            },
+        }
+    except Exception as e:
+        # Mark task as failed
+        task_repo.fail(task_id, str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/tasks/stats")
 async def task_stats():
     """Get queue statistics."""
-    return task_queue.stats()
+    return task_repo.stats()
 
 
 # =============================================================================
@@ -760,6 +959,36 @@ async def revoke_token(token_id: str, request: Request):
     )
     
     return {"success": True}
+
+
+# Orchestrator endpoints
+
+@app.get("/orchestrator/status")
+async def orchestrator_status():
+    """Get orchestrator status and stats."""
+    if not orchestrator:
+        return {"running": False, "error": "Orchestrator not initialized"}
+    return orchestrator.get_stats()
+
+
+@app.post("/orchestrator/start")
+async def orchestrator_start():
+    """Start the orchestrator."""
+    if not orchestrator:
+        raise HTTPException(status_code=500, detail="Orchestrator not initialized")
+    
+    await orchestrator.start()
+    return {"success": True, "message": "Orchestrator started"}
+
+
+@app.post("/orchestrator/stop")
+async def orchestrator_stop():
+    """Stop the orchestrator."""
+    if not orchestrator:
+        raise HTTPException(status_code=500, detail="Orchestrator not initialized")
+    
+    await orchestrator.stop()
+    return {"success": True, "message": "Orchestrator stopped"}
 
 
 # Audit log endpoint
