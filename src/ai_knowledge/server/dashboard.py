@@ -674,10 +674,16 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             }
         }
 
+        // Track pending port changes
+        let pendingPortChanges = {};
+        
         async function showPortsModal() {
             const ports = await api('/ports');
             const processes = await api('/processes');
             if (!ports) return;
+            
+            // Reset pending changes
+            pendingPortChanges = {};
             
             // Build a map of which processes are running
             const runningPorts = new Set();
@@ -696,7 +702,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             const conflicts = Object.entries(portMap).filter(([_, services]) => services.length > 1);
             const conflictPorts = new Set(conflicts.map(([port]) => parseInt(port)));
             
-            let html = '<div class="space-y-3 max-h-96 overflow-y-auto">';
+            let html = '<div class="space-y-3 max-h-80 overflow-y-auto">';
             
             if (ports.length === 0) {
                 html += '<div class="text-gray-400 text-sm">No port assignments yet. Auto-detect processes first.</div>';
@@ -734,12 +740,17 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
                     services.forEach(s => {
                         const hasConflict = conflictPorts.has(s.port);
                         const isActive = runningPorts.has(s.port);
+                        const key = `${s.project}:${s.service}`;
                         html += `<div class="flex justify-between items-center text-xs py-1 ${hasConflict ? 'text-red-300' : 'text-gray-400'}">
                             <span>${s.service}</span>
                             <div class="flex items-center gap-2">
                                 <input type="number" value="${s.port}" 
+                                       id="port-${key}"
+                                       data-original="${s.port}"
+                                       data-project="${s.project}"
+                                       data-service="${s.service}"
                                        class="w-16 bg-gray-600 rounded px-2 py-1 text-center ${hasConflict ? 'border border-red-500' : ''}"
-                                       onchange="updatePort('${s.project}', '${s.service}', this.value)">
+                                       onchange="markPortChanged('${s.project}', '${s.service}', this.value, ${s.port})">
                                 ${isActive ? '<span class="text-green-400">●</span>' : ''}
                             </div>
                         </div>`;
@@ -750,8 +761,67 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             
             html += '</div>';
             
+            // Save button (hidden until changes are made)
+            html += `<div id="port-save-bar" class="hidden mt-3 pt-3 border-t border-gray-600 flex justify-between items-center">
+                <span id="port-changes-count" class="text-xs text-yellow-400"></span>
+                <div class="flex gap-2">
+                    <button onclick="showPortsModal()" class="px-3 py-1 text-sm bg-gray-600 hover:bg-gray-500 rounded">Cancel</button>
+                    <button onclick="saveAllPorts()" class="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 rounded">Save Changes</button>
+                </div>
+            </div>`;
+            
             document.getElementById('current-task-name').textContent = 'Port Assignments';
             document.getElementById('output-panel').innerHTML = html;
+        }
+        
+        function markPortChanged(project, service, newPort, originalPort) {
+            const key = `${project}:${service}`;
+            newPort = parseInt(newPort);
+            
+            if (newPort === originalPort) {
+                delete pendingPortChanges[key];
+            } else {
+                pendingPortChanges[key] = { project, service, port: newPort };
+            }
+            
+            // Update save bar visibility
+            const saveBar = document.getElementById('port-save-bar');
+            const countEl = document.getElementById('port-changes-count');
+            const changeCount = Object.keys(pendingPortChanges).length;
+            
+            if (changeCount > 0) {
+                saveBar.classList.remove('hidden');
+                countEl.textContent = `${changeCount} unsaved change${changeCount > 1 ? 's' : ''}`;
+            } else {
+                saveBar.classList.add('hidden');
+            }
+        }
+        
+        async function saveAllPorts() {
+            const changes = Object.values(pendingPortChanges);
+            if (changes.length === 0) return;
+            
+            let success = 0;
+            let failed = 0;
+            
+            for (const change of changes) {
+                const result = await api('/ports/set', 'POST', change);
+                if (result && result.success) {
+                    success++;
+                } else {
+                    failed++;
+                }
+            }
+            
+            if (failed > 0) {
+                showNotification(`Saved ${success}, failed ${failed} (port may be in use)`, 'error');
+            } else {
+                showNotification(`Saved ${success} port change${success > 1 ? 's' : ''}`);
+            }
+            
+            pendingPortChanges = {};
+            showPortsModal();
+            loadProcesses();
         }
         
         async function autoAssignPort(project, service) {
@@ -762,20 +832,6 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
                 loadProcesses();
             } else {
                 showNotification('Failed to assign port', 'error');
-            }
-        }
-
-        async function updatePort(project, service, port) {
-            const result = await api('/ports/set', {
-                method: 'POST',
-                body: JSON.stringify({ project, service, port: parseInt(port) })
-            });
-            
-            if (result?.success) {
-                showNotification(`Port updated to ${port}`);
-            } else {
-                showNotification('Failed to update port - may be in use');
-                showPortsModal(); // Refresh to show correct value
             }
         }
 
