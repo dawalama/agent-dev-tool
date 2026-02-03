@@ -1,6 +1,7 @@
 """CLI interface for agent-dev-tool."""
 
 import json
+import os
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -1141,6 +1142,490 @@ def tool_docs(
         print(json.dumps(tools_data, indent=2))
     else:
         print(registry.to_prompt())
+
+
+# =============================================================================
+# Server Commands (Command Center)
+# =============================================================================
+
+server_app = typer.Typer(help="ADT Command Center server")
+app.add_typer(server_app, name="server")
+
+
+@server_app.command("start")
+def server_start(
+    host: Annotated[str, typer.Option("--host", "-h", help="Host to bind")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", "-p", help="Port to bind")] = 8420,
+    daemon: Annotated[bool, typer.Option("--daemon", "-d", help="Run in background")] = False,
+):
+    """Start the ADT Command Center server."""
+    from .server.config import Config, ensure_adt_home
+    
+    ensure_adt_home()
+    config = Config.load()
+    
+    if daemon:
+        rprint("[yellow]Daemon mode not yet implemented. Running in foreground.[/yellow]")
+    
+    rprint(f"[bold]Starting ADT Command Center...[/bold]")
+    rprint(f"  Host: {host}")
+    rprint(f"  Port: {port}")
+    rprint("")
+    rprint("[dim]Press Ctrl+C to stop[/dim]")
+    
+    # TODO: Start actual server
+    rprint("[yellow]Server implementation coming soon.[/yellow]")
+
+
+@server_app.command("status")
+def server_status():
+    """Check server status."""
+    rprint("[yellow]Server status check not yet implemented.[/yellow]")
+
+
+@server_app.command("stop")
+def server_stop():
+    """Stop the running server."""
+    rprint("[yellow]Server stop not yet implemented.[/yellow]")
+
+
+# =============================================================================
+# Config Commands
+# =============================================================================
+
+config_app = typer.Typer(help="Manage ADT configuration")
+app.add_typer(config_app, name="config")
+
+
+@config_app.command("init")
+def config_init(
+    force: Annotated[bool, typer.Option("--force", "-f", help="Overwrite existing")] = False,
+):
+    """Initialize ADT configuration."""
+    from .server.config import get_adt_home, get_default_config_template, ensure_adt_home
+    
+    ensure_adt_home()
+    config_path = get_adt_home() / "config.yml"
+    
+    if config_path.exists() and not force:
+        rprint(f"[yellow]Config already exists:[/yellow] {config_path}")
+        rprint("Use --force to overwrite")
+        return
+    
+    config_path.write_text(get_default_config_template())
+    rprint(f"[green]✓[/green] Created config at {config_path}")
+    rprint(f"   Edit to customize providers, channels, and agents")
+
+
+@config_app.command("edit")
+def config_edit():
+    """Open config in editor."""
+    import subprocess
+    from .server.config import get_adt_home, ensure_adt_home
+    
+    ensure_adt_home()
+    config_path = get_adt_home() / "config.yml"
+    
+    if not config_path.exists():
+        rprint("[yellow]Config not found. Run 'adt config init' first.[/yellow]")
+        return
+    
+    editor = os.environ.get("EDITOR", "vim")
+    subprocess.run([editor, str(config_path)])
+
+
+@config_app.command("show")
+def config_show():
+    """Show current configuration."""
+    from .server.config import Config, get_adt_home
+    
+    config_path = get_adt_home() / "config.yml"
+    
+    if not config_path.exists():
+        rprint("[yellow]No config found. Using defaults.[/yellow]")
+        rprint("Run 'adt config init' to create config file.")
+        return
+    
+    rprint(Panel(config_path.read_text(), title="~/.adt/config.yml", border_style="cyan"))
+
+
+@config_app.command("path")
+def config_path():
+    """Show config file path."""
+    from .server.config import get_adt_home
+    print(get_adt_home() / "config.yml")
+
+
+@config_app.command("set-secret")
+def config_set_secret(
+    key: Annotated[str, typer.Argument(help="Secret key name")],
+    value: Annotated[str, typer.Option("--value", "-v", help="Secret value", prompt=True, hide_input=True)] = "",
+):
+    """Store a secret securely."""
+    from .server.vault import set_secret
+    
+    set_secret(key, value)
+    rprint(f"[green]✓[/green] Stored secret: {key}")
+
+
+@config_app.command("get-secret")
+def config_get_secret(
+    key: Annotated[str, typer.Argument(help="Secret key name")],
+):
+    """Get a secret value."""
+    from .server.vault import get_secret
+    
+    value = get_secret(key)
+    if value:
+        print(value)
+    else:
+        rprint(f"[yellow]Secret not found:[/yellow] {key}")
+        raise typer.Exit(1)
+
+
+@config_app.command("list-secrets")
+def config_list_secrets():
+    """List all stored secret keys."""
+    from .server.vault import get_vault
+    
+    vault = get_vault()
+    keys = vault.list_keys()
+    
+    if not keys:
+        rprint("[yellow]No secrets stored.[/yellow]")
+        return
+    
+    table = Table(title="Stored Secrets")
+    table.add_column("Key", style="cyan")
+    table.add_column("Status")
+    
+    for key in keys:
+        table.add_row(key, "[green]✓[/green] set")
+    
+    console.print(table)
+
+
+@config_app.command("delete-secret")
+def config_delete_secret(
+    key: Annotated[str, typer.Argument(help="Secret key name")],
+):
+    """Delete a stored secret."""
+    from .server.vault import get_vault
+    
+    vault = get_vault()
+    if vault.delete(key):
+        rprint(f"[green]✓[/green] Deleted secret: {key}")
+    else:
+        rprint(f"[yellow]Secret not found:[/yellow] {key}")
+
+
+# =============================================================================
+# Agent Commands
+# =============================================================================
+
+agent_app = typer.Typer(help="Manage AI agents")
+app.add_typer(agent_app, name="agent")
+
+
+@agent_app.command("list")
+def agent_list():
+    """List all agents."""
+    from .server.config import Config, ensure_adt_home
+    from .server.agents import AgentManager
+    
+    ensure_adt_home()
+    config = Config.load()
+    manager = AgentManager(config)
+    
+    agents = manager.list()
+    
+    if not agents:
+        rprint("[yellow]No agents found.[/yellow]")
+        rprint("Use 'adt agent spawn <project>' to start one.")
+        return
+    
+    table = Table(title="Agents")
+    table.add_column("Project", style="cyan")
+    table.add_column("Status")
+    table.add_column("Provider")
+    table.add_column("Task")
+    table.add_column("PID")
+    
+    status_colors = {
+        "idle": "dim",
+        "working": "green",
+        "testing": "blue",
+        "waiting": "yellow",
+        "error": "red",
+        "stopped": "dim",
+    }
+    
+    for agent in agents:
+        color = status_colors.get(agent.status.value, "white")
+        table.add_row(
+            agent.project,
+            f"[{color}]{agent.status.value}[/{color}]",
+            agent.provider,
+            agent.current_task[:40] + "..." if agent.current_task and len(agent.current_task) > 40 else (agent.current_task or "-"),
+            str(agent.pid) if agent.pid else "-",
+        )
+    
+    console.print(table)
+
+
+@agent_app.command("spawn")
+def agent_spawn(
+    project: Annotated[str, typer.Argument(help="Project name")],
+    provider: Annotated[Optional[str], typer.Option("--provider", "-p", help="LLM provider")] = None,
+    task: Annotated[Optional[str], typer.Option("--task", "-t", help="Initial task")] = None,
+    worktree: Annotated[Optional[str], typer.Option("--worktree", "-w", help="Use specific worktree")] = None,
+):
+    """Spawn an agent for a project."""
+    from .server.config import Config, ensure_adt_home
+    from .server.agents import AgentManager
+    
+    ensure_adt_home()
+    config = Config.load()
+    manager = AgentManager(config)
+    
+    try:
+        state = manager.spawn(project, provider=provider, worktree=worktree, task=task)
+        rprint(f"[green]✓[/green] Spawned agent for {project}")
+        rprint(f"   Provider: {state.provider}")
+        rprint(f"   PID: {state.pid}")
+        if task:
+            rprint(f"   Task: {task}")
+    except ValueError as e:
+        rprint(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@agent_app.command("stop")
+def agent_stop(
+    project: Annotated[str, typer.Argument(help="Project name")],
+    force: Annotated[bool, typer.Option("--force", "-f", help="Force kill")] = False,
+):
+    """Stop an agent."""
+    from .server.config import Config, ensure_adt_home
+    from .server.agents import AgentManager
+    
+    ensure_adt_home()
+    config = Config.load()
+    manager = AgentManager(config)
+    
+    if manager.stop(project, force=force):
+        rprint(f"[green]✓[/green] Stopped agent for {project}")
+    else:
+        rprint(f"[yellow]No agent found for {project}[/yellow]")
+
+
+@agent_app.command("logs")
+def agent_logs(
+    project: Annotated[str, typer.Argument(help="Project name")],
+    lines: Annotated[int, typer.Option("--lines", "-n", help="Number of lines")] = 50,
+    follow: Annotated[bool, typer.Option("--follow", "-f", help="Follow log output")] = False,
+):
+    """View agent logs."""
+    from .server.config import Config, ensure_adt_home, get_adt_home
+    from .server.agents import AgentManager
+    
+    ensure_adt_home()
+    
+    log_path = get_adt_home() / "logs" / "agents" / f"{project}.log"
+    
+    if not log_path.exists():
+        rprint(f"[yellow]No logs found for {project}[/yellow]")
+        return
+    
+    if follow:
+        import subprocess
+        subprocess.run(["tail", "-f", str(log_path)])
+    else:
+        config = Config.load()
+        manager = AgentManager(config)
+        logs = manager.get_logs(project, lines=lines)
+        print(logs)
+
+
+@agent_app.command("assign")
+def agent_assign(
+    project: Annotated[str, typer.Argument(help="Project name")],
+    task: Annotated[str, typer.Argument(help="Task description")],
+):
+    """Assign a task to an agent."""
+    from .server.config import Config, ensure_adt_home
+    from .server.agents import AgentManager
+    
+    ensure_adt_home()
+    config = Config.load()
+    manager = AgentManager(config)
+    
+    try:
+        state = manager.assign_task(project, task)
+        rprint(f"[green]✓[/green] Assigned task to {project}")
+        rprint(f"   Status: {state.status.value}")
+    except ValueError as e:
+        rprint(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@agent_app.command("status")
+def agent_status(
+    project: Annotated[str, typer.Argument(help="Project name")],
+):
+    """Get detailed status for an agent."""
+    from .server.config import Config, ensure_adt_home
+    from .server.agents import AgentManager
+    
+    ensure_adt_home()
+    config = Config.load()
+    manager = AgentManager(config)
+    
+    agent = manager.get(project)
+    
+    if not agent:
+        rprint(f"[yellow]No agent found for {project}[/yellow]")
+        return
+    
+    rprint(Panel(
+        f"[bold]Project:[/bold] {agent.project}\n"
+        f"[bold]Status:[/bold] {agent.status.value}\n"
+        f"[bold]Provider:[/bold] {agent.provider}\n"
+        f"[bold]PID:[/bold] {agent.pid or 'N/A'}\n"
+        f"[bold]Worktree:[/bold] {agent.worktree or 'N/A'}\n"
+        f"[bold]Current Task:[/bold] {agent.current_task or 'None'}\n"
+        f"[bold]Started:[/bold] {agent.started_at or 'N/A'}\n"
+        f"[bold]Last Activity:[/bold] {agent.last_activity or 'N/A'}\n"
+        f"[bold]Error:[/bold] {agent.error or 'None'}",
+        title=f"Agent: {project}",
+        border_style="cyan"
+    ))
+
+
+# =============================================================================
+# Queue Commands
+# =============================================================================
+
+queue_app = typer.Typer(help="Manage task queue")
+app.add_typer(queue_app, name="queue")
+
+
+@queue_app.command("list")
+def queue_list(
+    project: Annotated[Optional[str], typer.Option("--project", "-p", help="Filter by project")] = None,
+    all_tasks: Annotated[bool, typer.Option("--all", "-a", help="Include completed tasks")] = False,
+):
+    """List tasks in the queue."""
+    from .server.queue import TaskQueue
+    from .server.config import ensure_adt_home
+    
+    ensure_adt_home()
+    queue = TaskQueue()
+    tasks = queue.list(project=project, include_completed=all_tasks)
+    
+    if not tasks:
+        rprint("[yellow]No tasks in queue.[/yellow]")
+        return
+    
+    table = Table(title="Task Queue")
+    table.add_column("ID", style="cyan")
+    table.add_column("Project")
+    table.add_column("Description")
+    table.add_column("Priority")
+    table.add_column("Status")
+    table.add_column("Assigned")
+    
+    status_colors = {
+        "pending": "white",
+        "assigned": "blue",
+        "in_progress": "green",
+        "blocked": "yellow",
+        "completed": "dim",
+        "failed": "red",
+        "cancelled": "dim",
+    }
+    
+    for task in tasks:
+        color = status_colors.get(task.status.value, "white")
+        desc = task.description[:35] + "..." if len(task.description) > 35 else task.description
+        table.add_row(
+            task.id,
+            task.project,
+            desc,
+            task.priority.value,
+            f"[{color}]{task.status.value}[/{color}]",
+            task.assigned_to or "-",
+        )
+    
+    console.print(table)
+
+
+@queue_app.command("add")
+def queue_add(
+    project: Annotated[str, typer.Argument(help="Project name")],
+    description: Annotated[str, typer.Argument(help="Task description")],
+    priority: Annotated[str, typer.Option("--priority", "-p", help="Priority: low, normal, high, urgent")] = "normal",
+):
+    """Add a task to the queue."""
+    from .server.queue import TaskQueue, TaskPriority
+    from .server.config import ensure_adt_home
+    
+    ensure_adt_home()
+    queue = TaskQueue()
+    
+    try:
+        prio = TaskPriority(priority)
+    except ValueError:
+        rprint(f"[red]Invalid priority:[/red] {priority}")
+        rprint("Use: low, normal, high, urgent")
+        raise typer.Exit(1)
+    
+    task = queue.create(project=project, description=description, priority=prio)
+    rprint(f"[green]✓[/green] Created task {task.id}")
+    rprint(f"   Project: {project}")
+    rprint(f"   Priority: {priority}")
+
+
+@queue_app.command("cancel")
+def queue_cancel(
+    task_id: Annotated[str, typer.Argument(help="Task ID")],
+):
+    """Cancel a task."""
+    from .server.queue import TaskQueue
+    from .server.config import ensure_adt_home
+    
+    ensure_adt_home()
+    queue = TaskQueue()
+    
+    task = queue.cancel(task_id)
+    if task:
+        rprint(f"[green]✓[/green] Cancelled task {task_id}")
+    else:
+        rprint(f"[yellow]Task not found:[/yellow] {task_id}")
+
+
+@queue_app.command("stats")
+def queue_stats():
+    """Show queue statistics."""
+    from .server.queue import TaskQueue
+    from .server.config import ensure_adt_home
+    
+    ensure_adt_home()
+    queue = TaskQueue()
+    stats = queue.stats()
+    
+    rprint(Panel(
+        f"[bold]Total:[/bold] {stats['total']}\n"
+        f"[bold]Pending:[/bold] {stats['pending']}\n"
+        f"[bold]In Progress:[/bold] {stats['in_progress']}\n"
+        f"[bold]Blocked:[/bold] {stats['blocked']}\n"
+        f"[bold]Completed:[/bold] {stats['completed']}\n"
+        f"[bold]Failed:[/bold] {stats['failed']}\n\n"
+        f"[bold]By Project:[/bold]\n" + 
+        "\n".join(f"  {p}: {c}" for p, c in stats['by_project'].items()),
+        title="Queue Stats",
+        border_style="cyan"
+    ))
 
 
 if __name__ == "__main__":
