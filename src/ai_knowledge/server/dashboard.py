@@ -223,7 +223,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
     <script>
         let ws = null;
         let authToken = localStorage.getItem('adt_token') || '';
-        let currentProject = 'all';
+        let currentProject = localStorage.getItem('adt_project') || 'all';
         let currentTaskId = null;
         let isLiveStreaming = false;
         let retryTaskId = null;
@@ -284,6 +284,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
 
         function selectProject(project) {
             currentProject = project;
+            localStorage.setItem('adt_project', project);
             document.querySelectorAll('#project-tabs button').forEach(btn => {
                 btn.className = btn.id === `project-${project}` ? 'px-3 py-1 rounded text-sm bg-blue-600' : 'px-3 py-1 rounded text-sm bg-gray-700 hover:bg-gray-600';
             });
@@ -295,12 +296,20 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             if (!projects) return;
             
             const container = document.getElementById('project-tabs');
-            container.innerHTML = `<button onclick="selectProject('all')" class="px-3 py-1 rounded text-sm bg-blue-600" id="project-all">All</button>`;
+            const isAllSelected = currentProject === 'all';
+            container.innerHTML = `<button onclick="selectProject('all')" class="px-3 py-1 rounded text-sm ${isAllSelected ? 'bg-blue-600' : 'bg-gray-700 hover:bg-gray-600'}" id="project-all">All</button>`;
+            
+            // If saved project no longer exists, reset to 'all'
+            const projectNames = projects.map(p => p.name);
+            if (currentProject !== 'all' && !projectNames.includes(currentProject)) {
+                currentProject = 'all';
+                localStorage.setItem('adt_project', 'all');
+            }
             
             projects.forEach(p => {
                 const btn = document.createElement('button');
                 btn.id = `project-${p.name}`;
-                btn.className = 'px-3 py-1 rounded text-sm bg-gray-700 hover:bg-gray-600';
+                btn.className = `px-3 py-1 rounded text-sm ${currentProject === p.name ? 'bg-blue-600' : 'bg-gray-700 hover:bg-gray-600'}`;
                 btn.textContent = p.name;
                 btn.onclick = () => selectProject(p.name);
                 container.appendChild(btn);
