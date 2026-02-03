@@ -1285,24 +1285,84 @@ def config_get_secret(
 
 @config_app.command("list-secrets")
 def config_list_secrets():
-    """List all stored secret keys."""
+    """List stored secrets and show which ones are needed."""
     from .server.vault import get_vault
+    from .server.config import Config, get_adt_home
+    import re
     
     vault = get_vault()
-    keys = vault.list_keys()
+    stored_keys = set(vault.list_keys())
     
-    if not keys:
-        rprint("[yellow]No secrets stored.[/yellow]")
-        return
+    # Find secrets actively used in config (not commented out)
+    active_secrets: dict[str, str] = {}
+    commented_secrets: dict[str, str] = {}
     
-    table = Table(title="Stored Secrets")
-    table.add_column("Key", style="cyan")
-    table.add_column("Status")
+    config_path = get_adt_home() / "config.yml"
+    if config_path.exists():
+        lines = config_path.read_text().split('\n')
+        for i, line in enumerate(lines):
+            # Skip lines that start with #
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                # Check commented lines for potential secrets
+                for match in re.finditer(r'\$\{([A-Z][A-Z0-9_]+)\}', line):
+                    key = match.group(1)
+                    if key != "VAR_NAME":  # Skip example placeholder
+                        commented_secrets[key] = _get_secret_description(key)
+                continue
+            
+            # Active (uncommented) secrets
+            for match in re.finditer(r'\$\{([A-Z][A-Z0-9_]+)\}', line):
+                key = match.group(1)
+                if key != "VAR_NAME":
+                    active_secrets[key] = _get_secret_description(key)
     
-    for key in keys:
-        table.add_row(key, "[green]✓[/green] set")
+    # Display stored secrets
+    if stored_keys:
+        table = Table(title="Stored Secrets")
+        table.add_column("Key", style="cyan")
+        table.add_column("Status")
+        table.add_column("Used For")
+        
+        for key in sorted(stored_keys):
+            table.add_row(key, "[green]✓ set[/green]", _get_secret_description(key))
+        
+        console.print(table)
+    else:
+        rprint("[dim]No secrets stored yet.[/dim]")
     
-    console.print(table)
+    # Show secrets needed (uncommented in config but not set)
+    needed = set(active_secrets.keys()) - stored_keys
+    if needed:
+        rprint("")
+        rprint("[yellow]Secrets needed (referenced in config):[/yellow]")
+        for key in sorted(needed):
+            rprint(f"  [yellow]○[/yellow] {key} - {active_secrets[key]}")
+        rprint("")
+        rprint("[dim]Set with: adt config set-secret <KEY>[/dim]")
+    
+    # Show available providers and their requirements
+    rprint("")
+    rprint("[bold]Provider Requirements:[/bold]")
+    rprint("  [green]cursor[/green] - No API key needed (uses Cursor login)")
+    rprint("  [green]ollama[/green] - No API key needed (runs locally)")
+    rprint("  [dim]claude[/dim] - Needs ANTHROPIC_API_KEY")
+    rprint("  [dim]openai[/dim] - Needs OPENAI_API_KEY")
+    rprint("  [dim]gemini[/dim] - Needs GEMINI_API_KEY")
+
+
+def _get_secret_description(key: str) -> str:
+    """Get description for a secret key."""
+    descriptions = {
+        "ANTHROPIC_API_KEY": "Claude/Anthropic API",
+        "OPENAI_API_KEY": "OpenAI API",
+        "GEMINI_API_KEY": "Google Gemini API",
+        "TELEGRAM_BOT_TOKEN": "Telegram bot",
+        "TWILIO_SID": "Twilio account SID",
+        "TWILIO_TOKEN": "Twilio auth token",
+        "ADT_SECRET_KEY": "Server security",
+    }
+    return descriptions.get(key, "")
 
 
 @config_app.command("delete-secret")

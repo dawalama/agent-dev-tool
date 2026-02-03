@@ -213,16 +213,28 @@ server:
   # secret_key: ${ADT_SECRET_KEY}
 
 # LLM Providers - agents pick based on task type
+# 
+# cursor-agent: Uses your existing Cursor authentication (no API key needed)
+# anthropic: Requires ANTHROPIC_API_KEY
+# ollama: Local, free, no API key needed
+#
 providers:
   cursor:
     type: cursor-agent
     default: true
+    # No API key needed - uses your Cursor login
   
   # claude:
   #   type: anthropic
   #   api_key: ${ANTHROPIC_API_KEY}
   #   model: claude-sonnet-4-20250514
   #   use_for: ["complex reasoning", "architecture"]
+  
+  # openai:
+  #   type: openai
+  #   api_key: ${OPENAI_API_KEY}
+  #   model: gpt-4o
+  #   use_for: ["general tasks"]
   
   # gemini:
   #   type: google
@@ -233,6 +245,7 @@ providers:
   ollama:
     type: ollama
     model: llama3.2:3b
+    # No API key needed - runs locally
     use_for: ["quick tasks", "low cost"]
 
 # Communication Channels
