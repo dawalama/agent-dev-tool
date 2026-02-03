@@ -1,9 +1,11 @@
 """Agent lifecycle management."""
 
+import asyncio
 import json
 import subprocess
 import signal
 import os
+import threading
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -70,6 +72,8 @@ class AgentManager:
         self.config = config
         self._agents: dict[str, AgentState] = {}
         self._processes: dict[str, subprocess.Popen] = {}
+        self._log_files: dict[str, any] = {}
+        self._monitors: dict[str, threading.Thread] = {}
         self._callbacks: dict[str, list[Callable]] = {
             "status_change": [],
             "task_complete": [],
@@ -195,9 +199,9 @@ class AgentManager:
         
         # Build command based on provider
         if provider == "cursor" or provider == "cursor-agent":
-            cmd = ["cursor-agent"]
+            cmd = ["cursor-agent", "-p"]
             if task:
-                cmd.extend(["--message", task])
+                cmd.append(task)
         else:
             # For other providers, we'll use a wrapper script
             cmd = [
@@ -224,7 +228,68 @@ class AgentManager:
             start_new_session=True,
         )
         
+        # Store log file reference for cleanup
+        self._log_files[project] = log_file
+        
+        # Start a monitor thread to watch for process exit
+        monitor = threading.Thread(
+            target=self._monitor_process,
+            args=(project, process),
+            daemon=True,
+        )
+        monitor.start()
+        self._monitors[project] = monitor
+        
         return process
+    
+    def _monitor_process(self, project: str, process: subprocess.Popen) -> None:
+        """Monitor a process and update state when it exits."""
+        exit_code = process.wait()
+        
+        # Close log file
+        if project in self._log_files:
+            try:
+                log_file = self._log_files[project]
+                log_file.write(f"\n\n=== Agent exited with code {exit_code} at {datetime.now().isoformat()} ===\n")
+                log_file.close()
+            except Exception:
+                pass
+            del self._log_files[project]
+        
+        # Update state
+        state = self._agents.get(project)
+        if state:
+            if exit_code == 0:
+                state.status = AgentStatus.STOPPED
+                state.error = None
+            else:
+                state.status = AgentStatus.ERROR
+                # Try to get last few lines of log for error context
+                state.error = self._get_exit_error(project, exit_code)
+            
+            state.pid = None
+            state.save()
+            self._emit("status_change", project, state)
+            
+            if exit_code != 0:
+                self._emit("error", project, state.error)
+    
+    def _get_exit_error(self, project: str, exit_code: int) -> str:
+        """Extract error message from agent logs."""
+        log_path = get_adt_home() / "logs" / "agents" / f"{project}.log"
+        if not log_path.exists():
+            return f"Agent exited with code {exit_code}"
+        
+        try:
+            content = log_path.read_text()
+            lines = content.strip().split("\n")
+            # Get last 5 non-empty lines before the exit message
+            recent = [l for l in lines[-10:] if l.strip() and not l.startswith("===")]
+            if recent:
+                return f"Exit code {exit_code}: {recent[-1][:200]}"
+            return f"Agent exited with code {exit_code}"
+        except Exception:
+            return f"Agent exited with code {exit_code}"
     
     def stop(self, project: str, force: bool = False) -> bool:
         """Stop an agent."""

@@ -332,6 +332,49 @@ async def stop_agent(project: str, force: bool = False):
         raise HTTPException(status_code=404, detail=f"Agent not found: {project}")
 
 
+class RetryRequest(BaseModel):
+    task: str | None = None  # Optional new task, otherwise retry with same
+
+
+@app.post("/agents/{project}/retry")
+async def retry_agent(project: str, request: RetryRequest | None = None):
+    """Retry a failed agent with optional new task."""
+    agent = agent_manager.get(project)
+    
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {project}")
+    
+    if agent.status != AgentStatus.ERROR:
+        raise HTTPException(status_code=400, detail=f"Agent is not in error state: {agent.status}")
+    
+    # Get task - use new one if provided, otherwise use the previous task
+    task = None
+    if request and request.task:
+        task = request.task
+    elif agent.current_task:
+        task = agent.current_task
+    
+    try:
+        # Stop first to clean up
+        agent_manager.stop(project, force=True)
+        
+        # Respawn with task
+        state = agent_manager.spawn(project, task=task)
+        event_bus.emit(EventType.AGENT_STARTED, project=project, task=task)
+        
+        return {
+            "success": True,
+            "agent": {
+                "project": state.project,
+                "status": state.status.value,
+                "pid": state.pid,
+                "task": state.current_task,
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/agents/{project}")
 async def get_agent(project: str):
     """Get agent status."""

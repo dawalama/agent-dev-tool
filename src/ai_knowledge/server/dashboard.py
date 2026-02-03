@@ -157,6 +157,32 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
         </div>
     </div>
 
+    <!-- Retry Agent Modal -->
+    <div id="retry-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center">
+        <div class="bg-gray-800 rounded-lg p-6 w-96">
+            <h3 class="text-lg font-semibold mb-4">Retry Agent</h3>
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Project</label>
+                    <input type="text" id="retry-project" readonly class="w-full bg-gray-600 rounded px-3 py-2 text-gray-300">
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Error</label>
+                    <div id="retry-error" class="text-red-400 text-sm bg-gray-700 rounded px-3 py-2 max-h-20 overflow-auto"></div>
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Task (edit to fix)</label>
+                    <textarea id="retry-task" rows="4" class="w-full bg-gray-700 rounded px-3 py-2" 
+                              placeholder="Describe the task..."></textarea>
+                </div>
+                <div class="flex gap-2 justify-end">
+                    <button onclick="closeRetryModal()" class="px-4 py-2 rounded bg-gray-600 hover:bg-gray-500">Cancel</button>
+                    <button onclick="submitRetry()" class="px-4 py-2 rounded bg-yellow-600 hover:bg-yellow-700">Retry</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Add Task Modal -->
     <div id="task-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center">
         <div class="bg-gray-800 rounded-lg p-6 w-96">
@@ -301,15 +327,19 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             }
             
             const agentsHtml = agents.map(a => `
-                <div class="bg-gray-700 rounded p-3">
+                <div class="bg-gray-700 rounded p-3 ${a.status === 'error' ? 'border border-red-500' : ''}">
                     <div class="flex justify-between items-center">
                         <span class="font-medium">${a.project}</span>
                         <span class="status-${a.status} text-sm">${a.status}</span>
                     </div>
                     <div class="text-gray-400 text-xs mt-1">${a.provider}</div>
                     ${a.task ? `<div class="text-gray-300 text-xs mt-1 truncate">${a.task}</div>` : ''}
+                    ${a.error ? `<div class="text-red-400 text-xs mt-1 truncate" title="${a.error}">${a.error}</div>` : ''}
                     <div class="flex gap-2 mt-2">
-                        ${a.status !== 'stopped' ? 
+                        ${a.status === 'error' ? 
+                            `<button onclick="retryAgent('${a.project}')" class="text-xs bg-yellow-600 hover:bg-yellow-700 px-2 py-1 rounded">Retry</button>
+                             <button onclick="openRetryModalFor('${a.project}', '${(a.task || '').replace(/'/g, "\\'")}', '${(a.error || '').replace(/'/g, "\\'")}')" class="text-xs bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded">Edit & Retry</button>` :
+                          a.status !== 'stopped' ? 
                             `<button onclick="stopAgent('${a.project}')" class="text-xs bg-red-600 hover:bg-red-700 px-2 py-1 rounded">Stop</button>` : 
                             `<button onclick="openSpawnModalFor('${a.project}')" class="text-xs bg-green-600 hover:bg-green-700 px-2 py-1 rounded">Spawn</button>`
                         }
@@ -481,6 +511,42 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
 
         function clearEvents() {
             document.getElementById('events-list').innerHTML = '<div class="text-gray-500 text-sm">Waiting for events...</div>';
+        }
+
+        // Retry functions
+        async function retryAgent(project) {
+            const result = await api(`/agents/${project}/retry`, { method: 'POST' });
+            if (result.success) {
+                loadAgents();
+            }
+        }
+
+        function openRetryModalFor(project, task, error) {
+            document.getElementById('retry-project').value = project;
+            document.getElementById('retry-task').value = task || '';
+            document.getElementById('retry-error').textContent = error || 'Unknown error';
+            document.getElementById('retry-modal').classList.remove('hidden');
+            document.getElementById('retry-modal').classList.add('flex');
+        }
+
+        function closeRetryModal() {
+            document.getElementById('retry-modal').classList.add('hidden');
+            document.getElementById('retry-modal').classList.remove('flex');
+        }
+
+        async function submitRetry() {
+            const project = document.getElementById('retry-project').value;
+            const task = document.getElementById('retry-task').value;
+            
+            const result = await api(`/agents/${project}/retry`, {
+                method: 'POST',
+                body: JSON.stringify({ task: task || null }),
+            });
+            
+            if (result.success) {
+                closeRetryModal();
+                loadAgents();
+            }
         }
 
         // Initialize
