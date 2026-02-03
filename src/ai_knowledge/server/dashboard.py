@@ -114,21 +114,24 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
                     </div>
                 </div>
                 
-                <!-- Agent Logs -->
+                <!-- Agent Output -->
                 <div class="bg-gray-800 rounded-lg p-4 mt-4">
                     <div class="flex justify-between items-center mb-4">
-                        <h2 class="text-lg font-semibold">Agent Output</h2>
+                        <h2 class="text-lg font-semibold">
+                            Agent Output
+                            <span id="current-agent-name" class="text-blue-400 text-sm ml-2"></span>
+                        </h2>
                         <div class="flex items-center gap-2">
-                            <select id="log-agent-select" onchange="selectAgent()" class="bg-gray-700 rounded px-2 py-1 text-sm">
+                            <select id="log-agent-select" onchange="selectAgent()" class="bg-gray-700 rounded px-2 py-1 text-sm hidden">
                                 <option value="">Select agent...</option>
                             </select>
                             <button id="live-toggle" onclick="toggleLive()" class="text-xs bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded hidden">
-                                ● Live
+                                ○ Live
                             </button>
                         </div>
                     </div>
                     <div id="agent-logs" class="max-h-64 overflow-y-auto log-container bg-gray-900 p-2 rounded">
-                        <div class="text-gray-500 text-sm">Select an agent to view output</div>
+                        <div class="text-gray-500 text-sm">Click on an agent above to view output</div>
                     </div>
                 </div>
             </div>
@@ -452,7 +455,8 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             }
             
             const agentsHtml = agents.map(a => `
-                <div class="bg-gray-700 rounded p-3 ${a.status === 'error' ? 'border border-red-500' : ''}">
+                <div class="bg-gray-700 rounded p-3 cursor-pointer hover:bg-gray-600 transition-colors ${a.status === 'error' ? 'border border-red-500' : ''} ${currentLogProject === a.project ? 'ring-2 ring-blue-500' : ''}" 
+                     onclick="viewLogs('${a.project}')">
                     <div class="flex justify-between items-center">
                         <span class="font-medium">${a.project}</span>
                         <span class="status-${a.status} text-sm">${a.status}</span>
@@ -460,7 +464,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
                     <div class="text-gray-400 text-xs mt-1">${a.provider}</div>
                     ${a.task ? `<div class="text-gray-300 text-xs mt-1 truncate">${a.task}</div>` : ''}
                     ${a.error ? `<div class="text-red-400 text-xs mt-1 truncate" title="${a.error}">${a.error}</div>` : ''}
-                    <div class="flex gap-2 mt-2">
+                    <div class="flex gap-2 mt-2" onclick="event.stopPropagation()">
                         ${a.status === 'error' ? 
                             `<button onclick="retryAgent('${a.project}')" class="text-xs bg-yellow-600 hover:bg-yellow-700 px-2 py-1 rounded">Retry</button>
                              <button onclick="openRetryModalFor('${a.project}', '${(a.task || '').replace(/'/g, "\\'")}', '${(a.error || '').replace(/'/g, "\\'")}')" class="text-xs bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded">Edit & Retry</button>` :
@@ -468,7 +472,6 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
                             `<button onclick="stopAgent('${a.project}')" class="text-xs bg-red-600 hover:bg-red-700 px-2 py-1 rounded">Stop</button>` : 
                             `<button onclick="openSpawnModalFor('${a.project}')" class="text-xs bg-green-600 hover:bg-green-700 px-2 py-1 rounded">Spawn</button>`
                         }
-                        <button onclick="viewLogs('${a.project}')" class="text-xs bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded">Logs</button>
                     </div>
                 </div>
             `).join('');
@@ -652,17 +655,33 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             eventsDiv.insertAdjacentHTML('afterbegin', html);
         }
 
-        function viewLogs(project) {
+        async function viewLogs(project) {
             document.getElementById('log-agent-select').value = project;
-            selectAgent();
+            await selectAgent();
+            
+            // Auto-enable live streaming if agent is working
+            const agents = await api('/agents');
+            const agent = agents.find(a => a.project === project);
+            if (agent && agent.status === 'working' && !isLiveStreaming) {
+                toggleLive();
+            }
+            
+            // Re-render agents to show selection highlight
+            renderAgents(agents);
+        }
+        
+        function renderAgents(agents) {
+            // Re-render to update selection highlight
+            loadAgents();
         }
 
         let currentLogProject = null;
         let isLiveStreaming = false;
 
-        function selectAgent() {
+        async function selectAgent() {
             const project = document.getElementById('log-agent-select').value;
             const liveBtn = document.getElementById('live-toggle');
+            const nameSpan = document.getElementById('current-agent-name');
             
             // Unsubscribe from previous
             if (currentLogProject && isLiveStreaming) {
@@ -674,12 +693,15 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             liveBtn.classList.add('hidden');
             liveBtn.classList.remove('bg-green-600');
             liveBtn.classList.add('bg-gray-600');
+            liveBtn.textContent = '○ Live';
             
             if (project) {
+                nameSpan.textContent = project;
                 loadAgentLogs();
                 liveBtn.classList.remove('hidden');
             } else {
-                document.getElementById('agent-logs').innerHTML = '<div class="text-gray-500 text-sm">Select an agent to view output</div>';
+                nameSpan.textContent = '';
+                document.getElementById('agent-logs').innerHTML = '<div class="text-gray-500 text-sm">Click on an agent above to view output</div>';
             }
         }
 
