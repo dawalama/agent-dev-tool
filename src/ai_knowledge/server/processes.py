@@ -184,9 +184,23 @@ class ProcessManager:
         cwd: str,
         process_type: ProcessType = ProcessType.DEV_SERVER,
         port: Optional[int] = None,
+        force_update: bool = False,
     ) -> ProcessState:
-        """Register a new process configuration."""
+        """Register a new process configuration.
+        
+        If force_update is True, updates existing config even if already registered.
+        """
         process_id = f"{project}-{name}".lower().replace(" ", "-")
+        
+        # Check if already exists and not forcing update
+        existing = self._processes.get(process_id)
+        if existing and not force_update:
+            # Update port if changed
+            if port and existing.port != port:
+                existing.port = port
+                existing.command = command
+                existing.save()
+            return existing
         
         state = ProcessState(
             id=process_id,
@@ -470,12 +484,23 @@ class ProcessManager:
         import re
         
         # Handle common patterns
-        # npm run dev -- --port XXXX or vite --port XXXX
-        if "npm" in cmd or "vite" in cmd or "next" in cmd:
-            # Remove existing port args
+        # For npm scripts, we need to use -- to pass args through
+        if cmd.strip() == "npm run dev":
+            return f"npm run dev -- --port {port}"
+        
+        if cmd.strip() == "npm start":
+            return f"PORT={port} npm start"
+        
+        # vite directly
+        if "vite" in cmd and "npm" not in cmd:
             cmd = re.sub(r'--port\s*\d+', '', cmd)
-            cmd = re.sub(r'-p\s*\d+', '', cmd)
             return f"{cmd.strip()} --port {port}"
+        
+        # next dev
+        if "next" in cmd:
+            cmd = re.sub(r'-p\s*\d+', '', cmd)
+            cmd = re.sub(r'--port\s*\d+', '', cmd)
+            return f"{cmd.strip()} -p {port}"
         
         # uvicorn --port XXXX
         if "uvicorn" in cmd:
@@ -492,7 +517,8 @@ class ProcessManager:
             cmd = re.sub(r'runserver\s*\d*', 'runserver', cmd)
             return f"{cmd.strip()} {port}"
         
-        return cmd
+        # Generic: try PORT env var
+        return f"PORT={port} {cmd}"
     
     def stop_all(self):
         """Stop all running processes."""
