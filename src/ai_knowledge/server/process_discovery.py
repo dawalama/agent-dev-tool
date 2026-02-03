@@ -73,7 +73,7 @@ Identify ONLY long-running dev processes (servers, workers, watchers). For each,
 2. command: The npm/python command (e.g., "npm run dev", "npm run worker:dev")
 3. description: Brief description
 4. default_port: Port number if it's a web server, or null for workers
-5. cwd: Subdirectory to run from, or null for root
+5. cwd: The subdirectory to run the command from. IMPORTANT: If a package.json or pyproject.toml is in a subdirectory (e.g., frontend/package.json), set cwd to that subdirectory name (e.g., "frontend"). Use null only if running from project root.
 
 EXCLUDE these types of scripts:
 - Build scripts (build, compile, bundle)
@@ -86,6 +86,8 @@ INCLUDE only:
 - Dev servers (dev, start, serve)
 - Workers (worker, worker:dev, queue)
 - Watch processes (watch, but only if it's a server)
+
+CRITICAL: Look at the file paths! If you see "frontend/package.json", the cwd should be "frontend".
 
 Return ONLY a valid JSON array with NO duplicates:
 [
