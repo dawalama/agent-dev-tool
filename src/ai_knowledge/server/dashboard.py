@@ -649,6 +649,51 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             }
         }
 
+        async function showPortsModal() {
+            const ports = await api('/ports');
+            if (!ports) return;
+            
+            let html = '<div class="space-y-2 max-h-64 overflow-y-auto">';
+            
+            if (ports.length === 0) {
+                html += '<div class="text-gray-400 text-sm">No port assignments yet. Auto-detect processes first.</div>';
+            } else {
+                html += ports.map(p => `
+                    <div class="flex justify-between items-center bg-gray-700 rounded p-2">
+                        <div>
+                            <span class="text-sm">${p.project}/${p.service}</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <input type="number" value="${p.port}" 
+                                   class="w-20 bg-gray-600 rounded px-2 py-1 text-sm text-center"
+                                   onchange="updatePort('${p.project}', '${p.service}', this.value)">
+                            <span class="${p.in_use ? 'text-green-400' : 'text-gray-400'} text-xs">${p.in_use ? '● in use' : '○ free'}</span>
+                        </div>
+                    </div>
+                `).join('');
+            }
+            
+            html += '</div>';
+            
+            // Simple modal using output panel for now
+            document.getElementById('current-task-name').textContent = 'Port Assignments';
+            document.getElementById('output-panel').innerHTML = html;
+        }
+
+        async function updatePort(project, service, port) {
+            const result = await api('/ports/set', {
+                method: 'POST',
+                body: JSON.stringify({ project, service, port: parseInt(port) })
+            });
+            
+            if (result?.success) {
+                showNotification(`Port updated to ${port}`);
+            } else {
+                showNotification('Failed to update port - may be in use');
+                showPortsModal(); // Refresh to show correct value
+            }
+        }
+
         function updateStats() {
             const stats = {
                 pending: allTasks.filter(t => t.status === 'pending').length,
