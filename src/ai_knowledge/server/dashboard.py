@@ -8,25 +8,25 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
     <title>ADT Command Center</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        .status-working { color: #22c55e; }
+        .status-working, .status-in_progress { color: #22c55e; }
         .status-idle { color: #6b7280; }
-        .status-error { color: #ef4444; }
+        .status-error, .status-failed { color: #ef4444; }
         .status-stopped { color: #9ca3af; }
         .status-pending { color: #f59e0b; }
-        .status-blocked { color: #eab308; }
-        .priority-urgent { background: #fecaca; }
-        .priority-high { background: #fed7aa; }
-        .priority-normal { background: #e5e7eb; }
-        .priority-low { background: #f3f4f6; }
+        .status-blocked, .status-awaiting_review { color: #eab308; }
+        .status-completed { color: #22c55e; }
         .log-container { font-family: monospace; font-size: 12px; }
         .fade-in { animation: fadeIn 0.3s ease-in; }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .tab-active { border-bottom: 2px solid #3b82f6; color: white; }
+        .tab-inactive { color: #9ca3af; }
+        .task-card:hover { background: #374151; }
     </style>
 </head>
 <body class="bg-gray-900 text-gray-100 min-h-screen">
     <div class="container mx-auto px-4 py-6 max-w-7xl">
         <!-- Header -->
-        <div class="flex justify-between items-center mb-6">
+        <div class="flex justify-between items-center mb-4">
             <h1 class="text-2xl font-bold">ADT Command Center</h1>
             <div class="flex items-center gap-4">
                 <div id="connection-status" class="flex items-center gap-2">
@@ -37,846 +37,698 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             </div>
         </div>
 
-        <!-- Stats Bar -->
-        <div class="grid grid-cols-4 gap-4 mb-6">
-            <div class="bg-gray-800 rounded-lg p-4">
-                <div class="text-3xl font-bold" id="stat-agents">0</div>
-                <div class="text-gray-400 text-sm">Active Agents</div>
-            </div>
-            <div class="bg-gray-800 rounded-lg p-4">
-                <div class="text-3xl font-bold" id="stat-tasks">0</div>
-                <div class="text-gray-400 text-sm">Pending Tasks</div>
-            </div>
-            <div class="bg-gray-800 rounded-lg p-4">
-                <div class="text-3xl font-bold" id="stat-projects">0</div>
-                <div class="text-gray-400 text-sm">Projects</div>
-            </div>
-            <div class="bg-gray-800 rounded-lg p-4">
-                <div class="text-3xl font-bold" id="stat-completed">0</div>
-                <div class="text-gray-400 text-sm">Completed Today</div>
+        <!-- Project Selector Bar -->
+        <div class="bg-gray-800 rounded-lg p-3 mb-4">
+            <div class="flex items-center gap-4">
+                <span class="text-gray-400 text-sm">Project:</span>
+                <div id="project-tabs" class="flex gap-2 flex-wrap">
+                    <button onclick="selectProject('all')" class="px-3 py-1 rounded text-sm bg-blue-600" id="project-all">All</button>
+                </div>
             </div>
         </div>
 
+        <!-- Main Content Grid -->
         <div class="grid grid-cols-3 gap-6">
-            <!-- Agents Panel -->
-            <div class="col-span-1">
-                <div class="bg-gray-800 rounded-lg p-4">
-                    <div class="flex justify-between items-center mb-4">
-                        <h2 class="text-lg font-semibold">Agents</h2>
-                        <button onclick="openSpawnModal()" class="bg-green-600 hover:bg-green-700 px-3 py-1 rounded text-sm">
-                            + Spawn
-                        </button>
-                    </div>
-                    <div id="agents-list" class="space-y-2">
-                        <div class="text-gray-500 text-sm">Loading...</div>
-                    </div>
-                </div>
-                
-                <!-- Projects Panel -->
-                <div class="bg-gray-800 rounded-lg p-4 mt-4">
-                    <h2 class="text-lg font-semibold mb-4">Projects</h2>
-                    <div id="projects-list" class="space-y-2 max-h-64 overflow-y-auto">
-                        <div class="text-gray-500 text-sm">Loading...</div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Task Queue Panel -->
-            <div class="col-span-1">
+            <!-- Left: Task Queue -->
+            <div class="col-span-2">
                 <!-- Pending Reviews -->
                 <div id="review-panel" class="bg-yellow-900 rounded-lg p-4 mb-4 hidden">
-                    <h2 class="text-lg font-semibold mb-2">Pending Review</h2>
+                    <h2 class="text-lg font-semibold mb-2">⚠️ Pending Review</h2>
                     <div id="review-list" class="space-y-2"></div>
                 </div>
-                
+
+                <!-- Tasks -->
                 <div class="bg-gray-800 rounded-lg p-4">
                     <div class="flex justify-between items-center mb-4">
-                        <h2 class="text-lg font-semibold">Task Queue</h2>
+                        <h2 class="text-lg font-semibold">Tasks</h2>
                         <button onclick="openTaskModal()" class="bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded text-sm">
                             + Add Task
                         </button>
                     </div>
-                    <div id="tasks-list" class="space-y-2 max-h-80 overflow-y-auto">
+                    <div id="tasks-list" class="space-y-2 max-h-96 overflow-y-auto">
                         <div class="text-gray-500 text-sm">Loading...</div>
                     </div>
                 </div>
-            </div>
 
-            <!-- Activity & Logs Panel -->
-            <div class="col-span-1">
-                <div class="bg-gray-800 rounded-lg p-4">
-                    <div class="flex justify-between items-center mb-4">
-                        <h2 class="text-lg font-semibold">Activity</h2>
-                        <button onclick="clearEvents()" class="text-gray-400 hover:text-white text-sm">Clear</button>
-                    </div>
-                    <div id="events-list" class="space-y-1 max-h-64 overflow-y-auto log-container">
-                        <div class="text-gray-500 text-sm">Waiting for events...</div>
-                    </div>
-                </div>
-                
-                <!-- Agent Output -->
+                <!-- Output Panel -->
                 <div class="bg-gray-800 rounded-lg p-4 mt-4">
                     <div class="flex justify-between items-center mb-4">
                         <h2 class="text-lg font-semibold">
-                            Agent Output
-                            <span id="current-agent-name" class="text-blue-400 text-sm ml-2"></span>
+                            Output
+                            <span id="current-task-name" class="text-blue-400 text-sm ml-2"></span>
                         </h2>
-                        <div class="flex items-center gap-2">
-                            <select id="log-agent-select" onchange="selectAgent()" class="bg-gray-700 rounded px-2 py-1 text-sm hidden">
-                                <option value="">Select agent...</option>
-                            </select>
-                            <button id="live-toggle" onclick="toggleLive()" class="text-xs bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded hidden">
-                                ○ Live
-                            </button>
+                        <button id="live-toggle" onclick="toggleLive()" class="text-xs bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded hidden">
+                            ○ Live
+                        </button>
+                    </div>
+                    <div id="output-panel" class="max-h-64 overflow-y-auto log-container bg-gray-900 p-3 rounded">
+                        <div class="text-gray-500 text-sm">Click on a task to view output</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right: Stats & Activity -->
+            <div class="col-span-1">
+                <!-- Stats -->
+                <div class="grid grid-cols-2 gap-3 mb-4">
+                    <div class="bg-gray-800 rounded-lg p-3 text-center">
+                        <div class="text-2xl font-bold text-green-400" id="stat-running">0</div>
+                        <div class="text-gray-400 text-xs">Running</div>
+                    </div>
+                    <div class="bg-gray-800 rounded-lg p-3 text-center">
+                        <div class="text-2xl font-bold text-yellow-400" id="stat-pending">0</div>
+                        <div class="text-gray-400 text-xs">Pending</div>
+                    </div>
+                    <div class="bg-gray-800 rounded-lg p-3 text-center">
+                        <div class="text-2xl font-bold text-green-500" id="stat-completed">0</div>
+                        <div class="text-gray-400 text-xs">Completed</div>
+                    </div>
+                    <div class="bg-gray-800 rounded-lg p-3 text-center">
+                        <div class="text-2xl font-bold text-red-400" id="stat-failed">0</div>
+                        <div class="text-gray-400 text-xs">Failed</div>
+                    </div>
+                </div>
+
+                <!-- Tabs: Activity / Workers -->
+                <div class="bg-gray-800 rounded-lg">
+                    <div class="flex border-b border-gray-700">
+                        <button onclick="showTab('activity')" id="tab-activity" class="px-4 py-2 text-sm tab-active">Activity</button>
+                        <button onclick="showTab('workers')" id="tab-workers" class="px-4 py-2 text-sm tab-inactive">Workers</button>
+                    </div>
+                    
+                    <!-- Activity Tab -->
+                    <div id="panel-activity" class="p-4">
+                        <div id="events-list" class="space-y-1 max-h-80 overflow-y-auto log-container">
+                            <div class="text-gray-500 text-sm">Waiting for events...</div>
                         </div>
                     </div>
-                    <div id="agent-logs" class="max-h-64 overflow-y-auto log-container bg-gray-900 p-2 rounded">
-                        <div class="text-gray-500 text-sm">Click on an agent above to view output</div>
+                    
+                    <!-- Workers Tab -->
+                    <div id="panel-workers" class="p-4 hidden">
+                        <div id="workers-list" class="space-y-2">
+                            <div class="text-gray-500 text-sm">No active workers</div>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <!-- Command Input -->
-        <div class="mt-6 bg-gray-800 rounded-lg p-4">
-            <div class="flex gap-2">
-                <input type="text" id="command-input" 
-                       placeholder="Enter command (e.g., spawn documaker, add task documaker Fix the bug)" 
-                       class="flex-1 bg-gray-700 rounded px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                       onkeypress="if(event.key==='Enter') executeCommand()">
-                <button onclick="executeCommand()" class="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded">
-                    Execute
-                </button>
+        <!-- Add Task Modal -->
+        <div id="task-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+            <div class="bg-gray-800 rounded-lg p-6 w-full max-w-md">
+                <h3 class="text-lg font-semibold mb-4">Add Task</h3>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Project</label>
+                        <select id="task-project" class="w-full bg-gray-700 rounded px-3 py-2"></select>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Description</label>
+                        <textarea id="task-description" rows="3" class="w-full bg-gray-700 rounded px-3 py-2" placeholder="What should the agent do?"></textarea>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Priority</label>
+                        <select id="task-priority" class="w-full bg-gray-700 rounded px-3 py-2">
+                            <option value="normal">Normal</option>
+                            <option value="high">High</option>
+                            <option value="urgent">Urgent</option>
+                            <option value="low">Low</option>
+                        </select>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <input type="checkbox" id="task-review" class="rounded">
+                        <label for="task-review" class="text-sm text-gray-400">Require review before running</label>
+                    </div>
+                </div>
+                <div class="flex justify-end gap-2 mt-6">
+                    <button onclick="closeTaskModal()" class="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded">Cancel</button>
+                    <button onclick="submitTask()" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded">Add Task</button>
+                </div>
             </div>
-            <div id="command-output" class="mt-2 text-sm text-gray-400"></div>
         </div>
-    </div>
 
-    <!-- Spawn Agent Modal -->
-    <div id="spawn-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center">
-        <div class="bg-gray-800 rounded-lg p-6 w-96">
-            <h3 class="text-lg font-semibold mb-4">Spawn Agent</h3>
-            <div class="space-y-4">
-                <div>
-                    <label class="block text-sm text-gray-400 mb-1">Project</label>
-                    <select id="spawn-project" class="w-full bg-gray-700 rounded px-3 py-2"></select>
+        <!-- Retry Modal -->
+        <div id="retry-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+            <div class="bg-gray-800 rounded-lg p-6 w-full max-w-md">
+                <h3 class="text-lg font-semibold mb-4">Retry Task</h3>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Task Description</label>
+                        <textarea id="retry-description" rows="3" class="w-full bg-gray-700 rounded px-3 py-2"></textarea>
+                    </div>
+                    <div id="retry-error" class="text-red-400 text-sm"></div>
                 </div>
-                <div>
-                    <label class="block text-sm text-gray-400 mb-1">Initial Task (optional)</label>
-                    <textarea id="spawn-task" rows="3" class="w-full bg-gray-700 rounded px-3 py-2" 
-                              placeholder="Describe the task..."></textarea>
-                </div>
-                <div class="flex gap-2 justify-end">
-                    <button onclick="closeSpawnModal()" class="px-4 py-2 rounded bg-gray-600 hover:bg-gray-500">Cancel</button>
-                    <button onclick="spawnAgent()" class="px-4 py-2 rounded bg-green-600 hover:bg-green-700">Spawn</button>
+                <div class="flex justify-end gap-2 mt-6">
+                    <button onclick="closeRetryModal()" class="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded">Cancel</button>
+                    <button onclick="submitRetry()" class="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 rounded">Retry</button>
                 </div>
             </div>
         </div>
-    </div>
 
-    <!-- Retry Agent Modal -->
-    <div id="retry-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center">
-        <div class="bg-gray-800 rounded-lg p-6 w-96">
-            <h3 class="text-lg font-semibold mb-4">Retry Agent</h3>
-            <div class="space-y-4">
-                <div>
-                    <label class="block text-sm text-gray-400 mb-1">Project</label>
-                    <input type="text" id="retry-project" readonly class="w-full bg-gray-600 rounded px-3 py-2 text-gray-300">
+        <!-- Auth Modal -->
+        <div id="auth-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+            <div class="bg-gray-800 rounded-lg p-6 w-full max-w-sm">
+                <h3 class="text-lg font-semibold mb-4">Authentication Required</h3>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">API Token</label>
+                        <input type="password" id="auth-token" class="w-full bg-gray-700 rounded px-3 py-2" placeholder="adt_...">
+                    </div>
                 </div>
-                <div>
-                    <label class="block text-sm text-gray-400 mb-1">Error</label>
-                    <div id="retry-error" class="text-red-400 text-sm bg-gray-700 rounded px-3 py-2 max-h-20 overflow-auto"></div>
-                </div>
-                <div>
-                    <label class="block text-sm text-gray-400 mb-1">Task (edit to fix)</label>
-                    <textarea id="retry-task" rows="4" class="w-full bg-gray-700 rounded px-3 py-2" 
-                              placeholder="Describe the task..."></textarea>
-                </div>
-                <div class="flex gap-2 justify-end">
-                    <button onclick="closeRetryModal()" class="px-4 py-2 rounded bg-gray-600 hover:bg-gray-500">Cancel</button>
-                    <button onclick="submitRetry()" class="px-4 py-2 rounded bg-yellow-600 hover:bg-yellow-700">Retry</button>
+                <div class="flex justify-end gap-2 mt-6">
+                    <button onclick="submitAuth()" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded w-full">Login</button>
                 </div>
             </div>
         </div>
-    </div>
 
-    <!-- Add Task Modal -->
-    <div id="task-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center">
-        <div class="bg-gray-800 rounded-lg p-6 w-96">
-            <h3 class="text-lg font-semibold mb-4">Add Task</h3>
-            <div class="space-y-4">
-                <div>
-                    <label class="block text-sm text-gray-400 mb-1">Project</label>
-                    <select id="task-project" class="w-full bg-gray-700 rounded px-3 py-2"></select>
-                </div>
-                <div>
-                    <label class="block text-sm text-gray-400 mb-1">Description</label>
-                    <textarea id="task-description" rows="3" class="w-full bg-gray-700 rounded px-3 py-2" 
-                              placeholder="Describe the task..."></textarea>
-                </div>
-                <div>
-                    <label class="block text-sm text-gray-400 mb-1">Priority</label>
-                    <select id="task-priority" class="w-full bg-gray-700 rounded px-3 py-2">
-                        <option value="low">Low</option>
-                        <option value="normal" selected>Normal</option>
-                        <option value="high">High</option>
-                        <option value="urgent">Urgent</option>
-                    </select>
-                </div>
-                <div class="flex gap-2 justify-end">
-                    <button onclick="closeTaskModal()" class="px-4 py-2 rounded bg-gray-600 hover:bg-gray-500">Cancel</button>
-                    <button onclick="addTask()" class="px-4 py-2 rounded bg-blue-600 hover:bg-blue-700">Add Task</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Auth Modal -->
-    <div id="auth-modal" class="fixed inset-0 bg-black bg-opacity-75 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-lg p-6 w-96">
-            <h3 class="text-lg font-semibold mb-4">Authentication Required</h3>
-            <div class="space-y-4">
-                <div>
-                    <label class="block text-sm text-gray-400 mb-1">API Token</label>
-                    <input type="password" id="auth-token" class="w-full bg-gray-700 rounded px-3 py-2" 
-                           placeholder="adt_...">
-                    <p class="text-xs text-gray-500 mt-1">Create token: adt token create dashboard</p>
-                </div>
-                <div class="flex gap-2 justify-end">
-                    <button onclick="submitAuth()" class="px-4 py-2 rounded bg-blue-600 hover:bg-blue-700">Authenticate</button>
-                </div>
-                <div id="auth-error" class="text-red-400 text-sm hidden"></div>
-            </div>
-        </div>
+        <!-- Toast Notification -->
+        <div id="toast" class="fixed bottom-4 right-4 bg-gray-800 text-white px-4 py-2 rounded-lg shadow-lg hidden"></div>
     </div>
 
     <script>
-        const API_BASE = '';
         let ws = null;
-        let projects = [];
-        let reconnectAttempts = 0;
         let authToken = localStorage.getItem('adt_token') || '';
+        let currentProject = 'all';
+        let currentTaskId = null;
+        let isLiveStreaming = false;
+        let retryTaskId = null;
+        let allTasks = [];
+        let allWorkers = [];
 
-        // Auth functions
         function getAuthHeaders() {
-            return authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
+            return { 'Authorization': `Bearer ${authToken}`, 'Content-Type': 'application/json' };
+        }
+
+        async function api(path, options = {}) {
+            try {
+                const resp = await fetch(path, {
+                    ...options,
+                    headers: { ...getAuthHeaders(), ...(options.headers || {}) }
+                });
+                if (resp.status === 401 || resp.status === 403) {
+                    showAuthModal();
+                    return null;
+                }
+                if (!resp.ok) {
+                    const text = await resp.text();
+                    throw new Error(text);
+                }
+                return await resp.json();
+            } catch (e) {
+                console.error('API error:', e);
+                return null;
+            }
         }
 
         function showAuthModal() {
             document.getElementById('auth-modal').classList.remove('hidden');
             document.getElementById('auth-modal').classList.add('flex');
-            document.getElementById('auth-token').focus();
         }
 
-        function hideAuthModal() {
+        function submitAuth() {
+            authToken = document.getElementById('auth-token').value;
+            localStorage.setItem('adt_token', authToken);
             document.getElementById('auth-modal').classList.add('hidden');
-            document.getElementById('auth-modal').classList.remove('flex');
-        }
-
-        async function submitAuth() {
-            const token = document.getElementById('auth-token').value.trim();
-            if (!token) return;
-
-            // Test the token
-            try {
-                const response = await fetch('/status', {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-                
-                if (response.ok) {
-                    authToken = token;
-                    localStorage.setItem('adt_token', token);
-                    hideAuthModal();
-                    document.getElementById('auth-error').classList.add('hidden');
-                    loadAll();
-                } else if (response.status === 401 || response.status === 403) {
-                    document.getElementById('auth-error').textContent = 'Invalid or expired token';
-                    document.getElementById('auth-error').classList.remove('hidden');
-                } else {
-                    document.getElementById('auth-error').textContent = 'Authentication failed';
-                    document.getElementById('auth-error').classList.remove('hidden');
-                }
-            } catch (e) {
-                document.getElementById('auth-error').textContent = 'Connection error';
-                document.getElementById('auth-error').classList.remove('hidden');
-            }
+            loadAll();
+            connectWebSocket();
         }
 
         function logout() {
-            authToken = '';
             localStorage.removeItem('adt_token');
+            authToken = '';
             showAuthModal();
         }
 
-        // WebSocket connection
-        function connectWebSocket() {
-            const wsUrl = `ws://${window.location.host}/ws`;
-            ws = new WebSocket(wsUrl);
-            
-            ws.onopen = () => {
-                document.getElementById('ws-indicator').className = 'w-2 h-2 rounded-full bg-green-500';
-                document.getElementById('ws-status').textContent = 'Connected';
-                reconnectAttempts = 0;
-            };
-            
-            ws.onclose = () => {
-                document.getElementById('ws-indicator').className = 'w-2 h-2 rounded-full bg-red-500';
-                document.getElementById('ws-status').textContent = 'Disconnected';
-                
-                // Reconnect after delay
-                if (reconnectAttempts < 10) {
-                    setTimeout(() => {
-                        reconnectAttempts++;
-                        connectWebSocket();
-                    }, 2000);
-                }
-            };
-            
-            ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                
-                // Handle agent output streaming
-                if (data.type === 'agent.output' && data.project === currentLogProject) {
-                    appendAgentOutput(data.content);
-                } else {
-                    handleEvent(data);
-                }
-            };
+        function showTab(tab) {
+            document.getElementById('tab-activity').className = tab === 'activity' ? 'px-4 py-2 text-sm tab-active' : 'px-4 py-2 text-sm tab-inactive';
+            document.getElementById('tab-workers').className = tab === 'workers' ? 'px-4 py-2 text-sm tab-active' : 'px-4 py-2 text-sm tab-inactive';
+            document.getElementById('panel-activity').classList.toggle('hidden', tab !== 'activity');
+            document.getElementById('panel-workers').classList.toggle('hidden', tab !== 'workers');
         }
 
-        function appendAgentOutput(content) {
-            const logsDiv = document.getElementById('agent-logs');
-            
-            // Remove placeholder if present
-            if (logsDiv.querySelector('.text-gray-500')) {
-                logsDiv.innerHTML = '<pre class="text-xs text-gray-300 whitespace-pre-wrap"></pre>';
-            }
-            
-            const pre = logsDiv.querySelector('pre');
-            if (pre) {
-                pre.textContent += content;
-                logsDiv.scrollTop = logsDiv.scrollHeight;
-            }
-        }
-
-        function handleEvent(event) {
-            // Add to activity log
-            const eventsDiv = document.getElementById('events-list');
-            if (eventsDiv.querySelector('.text-gray-500')) {
-                eventsDiv.innerHTML = '';
-            }
-            
-            const time = new Date().toLocaleTimeString();
-            const eventHtml = `<div class="fade-in text-xs">
-                <span class="text-gray-500">${time}</span>
-                <span class="text-blue-400">${event.type}</span>
-                ${event.project ? `<span class="text-green-400">${event.project}</span>` : ''}
-            </div>`;
-            eventsDiv.insertAdjacentHTML('afterbegin', eventHtml);
-            
-            // Refresh relevant data
-            if (event.type.startsWith('agent.')) {
-                loadAgents();
-            } else if (event.type.startsWith('task.')) {
-                loadTasks();
-            }
-            
-            loadStatus();
-        }
-
-        // API calls
-        async function api(endpoint, options = {}) {
-            const response = await fetch(API_BASE + endpoint, {
-                ...options,
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...getAuthHeaders(),
-                    ...options.headers,
-                },
+        function selectProject(project) {
+            currentProject = project;
+            document.querySelectorAll('#project-tabs button').forEach(btn => {
+                btn.className = btn.id === `project-${project}` ? 'px-3 py-1 rounded text-sm bg-blue-600' : 'px-3 py-1 rounded text-sm bg-gray-700 hover:bg-gray-600';
             });
-            
-            // Handle auth errors
-            if (response.status === 401 || response.status === 403) {
-                showAuthModal();
-                throw new Error('Authentication required');
-            }
-            
-            return response.json();
-        }
-        
-        async function loadAll() {
-            try {
-                await loadStatus();
-                await loadProjects();
-                await loadAgents();
-                await loadTasks();
-            } catch (e) {
-                // Auth error already handled
-            }
-        }
-
-        async function loadStatus() {
-            const status = await api('/status');
-            document.getElementById('stat-agents').textContent = status.agents?.running || 0;
-            document.getElementById('stat-tasks').textContent = status.queue?.pending || 0;
-            document.getElementById('stat-completed').textContent = status.queue?.completed || 0;
+            renderTasks();
         }
 
         async function loadProjects() {
-            projects = await api('/projects');
-            document.getElementById('stat-projects').textContent = projects.length;
+            const projects = await api('/projects');
+            if (!projects) return;
             
-            const projectsHtml = projects.map(p => `
-                <div class="bg-gray-700 rounded p-2 text-sm">
-                    <div class="font-medium">${p.name}</div>
-                    <div class="text-gray-400 text-xs truncate">${p.path}</div>
-                </div>
-            `).join('');
-            document.getElementById('projects-list').innerHTML = projectsHtml || '<div class="text-gray-500 text-sm">No projects</div>';
+            const container = document.getElementById('project-tabs');
+            container.innerHTML = '<button onclick="selectProject(\'all\')" class="px-3 py-1 rounded text-sm bg-blue-600" id="project-all">All</button>';
             
-            // Update selects
-            const projectOptions = projects.map(p => `<option value="${p.name}">${p.name}</option>`).join('');
-            document.getElementById('spawn-project').innerHTML = projectOptions;
-            document.getElementById('task-project').innerHTML = projectOptions;
-            
-            // Update log select
-            const logSelect = document.getElementById('log-agent-select');
-            const currentValue = logSelect.value;
-            logSelect.innerHTML = '<option value="">Select agent...</option>' + projectOptions;
-            logSelect.value = currentValue;
-        }
-
-        async function loadAgents() {
-            const agents = await api('/agents');
-            
-            if (agents.length === 0) {
-                document.getElementById('agents-list').innerHTML = '<div class="text-gray-500 text-sm">No agents running</div>';
-                return;
-            }
-            
-            const agentsHtml = agents.map(a => `
-                <div class="bg-gray-700 rounded p-3 cursor-pointer hover:bg-gray-600 transition-colors ${a.status === 'error' ? 'border border-red-500' : ''} ${currentLogProject === a.project ? 'ring-2 ring-blue-500' : ''}" 
-                     onclick="viewLogs('${a.project}')">
-                    <div class="flex justify-between items-center">
-                        <span class="font-medium">${a.project}</span>
-                        <span class="status-${a.status} text-sm">${a.status}</span>
-                    </div>
-                    <div class="text-gray-400 text-xs mt-1">${a.provider}</div>
-                    ${a.task ? `<div class="text-gray-300 text-xs mt-1 truncate">${a.task}</div>` : ''}
-                    ${a.error ? `<div class="text-red-400 text-xs mt-1 truncate" title="${a.error}">${a.error}</div>` : ''}
-                    <div class="flex gap-2 mt-2" onclick="event.stopPropagation()">
-                        ${a.status === 'error' ? 
-                            `<button onclick="retryAgent('${a.project}')" class="text-xs bg-yellow-600 hover:bg-yellow-700 px-2 py-1 rounded">Retry</button>
-                             <button onclick="openRetryModalFor('${a.project}', '${(a.task || '').replace(/'/g, "\\'")}', '${(a.error || '').replace(/'/g, "\\'")}')" class="text-xs bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded">Edit & Retry</button>` :
-                          a.status !== 'stopped' ? 
-                            `<button onclick="stopAgent('${a.project}')" class="text-xs bg-red-600 hover:bg-red-700 px-2 py-1 rounded">Stop</button>` : 
-                            `<button onclick="openSpawnModalFor('${a.project}')" class="text-xs bg-green-600 hover:bg-green-700 px-2 py-1 rounded">Spawn</button>`
-                        }
-                    </div>
-                </div>
-            `).join('');
-            document.getElementById('agents-list').innerHTML = agentsHtml;
-        }
-
-        async function loadPendingReviews() {
-            try {
-                const reviews = await api('/tasks/pending-review');
-                const panel = document.getElementById('review-panel');
-                const list = document.getElementById('review-list');
-                
-                if (reviews.length === 0) {
-                    panel.classList.add('hidden');
-                    return;
-                }
-                
-                panel.classList.remove('hidden');
-                list.innerHTML = reviews.map(t => `
-                    <div class="bg-yellow-800 rounded p-2">
-                        <div class="text-sm font-medium">${t.project}</div>
-                        <div class="text-xs text-yellow-200 mt-1">${t.review_prompt || t.description}</div>
-                        <div class="flex gap-2 mt-2">
-                            <button onclick="approveTask('${t.id}')" class="text-xs bg-green-600 hover:bg-green-700 px-2 py-1 rounded">Approve</button>
-                            <button onclick="rejectTask('${t.id}')" class="text-xs bg-red-600 hover:bg-red-700 px-2 py-1 rounded">Reject</button>
-                        </div>
-                    </div>
-                `).join('');
-            } catch (e) {
-                // Ignore errors
-            }
-        }
-
-        async function approveTask(taskId) {
-            const result = await api(`/tasks/${taskId}/review`, {
-                method: 'POST',
-                body: JSON.stringify({ approved: true }),
+            projects.forEach(p => {
+                const btn = document.createElement('button');
+                btn.id = `project-${p.name}`;
+                btn.className = 'px-3 py-1 rounded text-sm bg-gray-700 hover:bg-gray-600';
+                btn.textContent = p.name;
+                btn.onclick = () => selectProject(p.name);
+                container.appendChild(btn);
             });
-            if (result.success) {
-                showNotification('Task approved');
-                loadPendingReviews();
-                loadTasks();
-            }
-        }
-
-        async function rejectTask(taskId) {
-            const comment = prompt('Reason for rejection (optional):');
-            const result = await api(`/tasks/${taskId}/review`, {
-                method: 'POST',
-                body: JSON.stringify({ approved: false, comment }),
-            });
-            if (result.success) {
-                showNotification('Task rejected');
-                loadPendingReviews();
-                loadTasks();
-            }
         }
 
         async function loadTasks() {
             const tasks = await api('/tasks');
+            if (!tasks) return;
             
-            // Also load pending reviews
+            allTasks = tasks;
             loadPendingReviews();
+            renderTasks();
+            updateStats();
+        }
+
+        function renderTasks() {
+            const filtered = currentProject === 'all' ? allTasks : allTasks.filter(t => t.project === currentProject);
+            const container = document.getElementById('tasks-list');
             
-            if (tasks.length === 0) {
-                document.getElementById('tasks-list').innerHTML = '<div class="text-gray-500 text-sm">No pending tasks</div>';
+            if (filtered.length === 0) {
+                container.innerHTML = '<div class="text-gray-500 text-sm">No tasks</div>';
                 return;
             }
-            
-            const tasksHtml = tasks.map(t => `
-                <div class="bg-gray-700 rounded p-3 priority-${t.priority} ${t.status === 'failed' ? 'border border-red-500' : ''}">
-                    <div class="flex justify-between items-center">
-                        <span class="text-xs text-gray-400">${t.id}</span>
-                        <span class="status-${t.status} text-xs">${t.status}</span>
-                    </div>
-                    <div class="font-medium text-sm mt-1 text-gray-900">${t.description.slice(0, 60)}${t.description.length > 60 ? '...' : ''}</div>
-                    ${t.error ? `<div class="text-red-400 text-xs mt-1 truncate">${t.error}</div>` : ''}
-                    <div class="flex justify-between items-center mt-2">
-                        <span class="text-xs text-gray-600">${t.project}</span>
-                        <div class="flex gap-1">
-                            ${t.status === 'pending' ? `
-                                <button onclick="runTaskNow('${t.id}')" class="text-xs bg-green-600 hover:bg-green-700 px-2 py-1 rounded text-white">Run</button>
-                                <button onclick="cancelTask('${t.id}')" class="text-xs bg-red-600 hover:bg-red-700 px-2 py-1 rounded text-white">Cancel</button>
-                            ` : ''}
-                            ${t.status === 'failed' ? `
-                                <button onclick="retryTask('${t.id}')" class="text-xs bg-yellow-600 hover:bg-yellow-700 px-2 py-1 rounded text-white">Retry</button>
-                            ` : ''}
+
+            container.innerHTML = filtered.map(t => {
+                const statusIcon = getStatusIcon(t.status);
+                const buttons = getTaskButtons(t);
+                const isSelected = t.id === currentTaskId;
+                
+                return `
+                    <div class="task-card rounded p-3 cursor-pointer transition-colors ${isSelected ? 'bg-gray-600 ring-2 ring-blue-500' : 'bg-gray-700'}"
+                         onclick="selectTask('${t.id}')">
+                        <div class="flex justify-between items-start">
+                            <div class="flex items-center gap-2">
+                                <span class="text-lg">${statusIcon}</span>
+                                <div>
+                                    <div class="text-sm font-medium">${t.project}</div>
+                                    <div class="text-xs text-gray-400 truncate max-w-xs">${t.description}</div>
+                                </div>
+                            </div>
+                            <span class="status-${t.status} text-xs">${t.status}</span>
+                        </div>
+                        ${t.error ? `<div class="text-red-400 text-xs mt-2 truncate">${t.error}</div>` : ''}
+                        <div class="flex gap-2 mt-2" onclick="event.stopPropagation()">
+                            ${buttons}
                         </div>
                     </div>
-                </div>
-            `).join('');
-            document.getElementById('tasks-list').innerHTML = tasksHtml;
+                `;
+            }).join('');
         }
 
-        async function loadAgentLogs() {
-            const agent = document.getElementById('log-agent-select').value;
-            if (!agent) return;
-            
-            const data = await api(`/agents/${agent}/logs?lines=50`);
-            const logsDiv = document.getElementById('agent-logs');
-            
-            if (data.logs) {
-                logsDiv.innerHTML = `<pre class="text-xs text-gray-300 whitespace-pre-wrap">${data.logs}</pre>`;
-                logsDiv.scrollTop = logsDiv.scrollHeight;
-            } else {
-                logsDiv.innerHTML = '<div class="text-gray-500 text-sm">No logs available</div>';
+        function getStatusIcon(status) {
+            switch(status) {
+                case 'completed': return '✓';
+                case 'failed': return '✗';
+                case 'in_progress': return '⟳';
+                case 'pending': return '○';
+                case 'blocked': return '⏸';
+                case 'awaiting_review': return '⚠';
+                default: return '•';
             }
         }
 
-        // Actions
-        async function spawnAgent() {
-            const project = document.getElementById('spawn-project').value;
-            const task = document.getElementById('spawn-task').value;
-            
-            await api('/agents/spawn', {
-                method: 'POST',
-                body: JSON.stringify({ project, task: task || null }),
-            });
-            
-            closeSpawnModal();
-            loadAgents();
+        function getTaskButtons(task) {
+            switch(task.status) {
+                case 'pending':
+                    return `
+                        <button onclick="runTask('${task.id}')" class="text-xs bg-green-600 hover:bg-green-700 px-2 py-1 rounded">Run</button>
+                        <button onclick="cancelTask('${task.id}')" class="text-xs bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded">Cancel</button>
+                    `;
+                case 'in_progress':
+                    return `
+                        <button onclick="stopTask('${task.id}')" class="text-xs bg-red-600 hover:bg-red-700 px-2 py-1 rounded">Stop</button>
+                    `;
+                case 'completed':
+                    return `
+                        <button onclick="viewOutput('${task.id}')" class="text-xs bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded">View Output</button>
+                    `;
+                case 'failed':
+                    return `
+                        <button onclick="retryTask('${task.id}')" class="text-xs bg-yellow-600 hover:bg-yellow-700 px-2 py-1 rounded">Retry</button>
+                        <button onclick="openRetryModal('${task.id}')" class="text-xs bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded">Edit & Retry</button>
+                    `;
+                case 'blocked':
+                    return `<span class="text-xs text-gray-500">Waiting on dependencies</span>`;
+                default:
+                    return '';
+            }
         }
 
-        async function stopAgent(project) {
-            await api(`/agents/${project}/stop`, { method: 'POST' });
-            loadAgents();
+        async function runTask(taskId) {
+            const result = await api(`/tasks/${taskId}/run`, { method: 'POST' });
+            if (result?.success) {
+                showNotification('Task started');
+                loadTasks();
+                loadWorkers();
+            }
         }
 
-        async function addTask() {
-            const project = document.getElementById('task-project').value;
-            const description = document.getElementById('task-description').value;
-            const priority = document.getElementById('task-priority').value;
-            
-            await api('/tasks', {
-                method: 'POST',
-                body: JSON.stringify({ project, description, priority }),
-            });
-            
-            closeTaskModal();
-            loadTasks();
+        async function stopTask(taskId) {
+            const task = allTasks.find(t => t.id === taskId);
+            if (task?.assigned_to) {
+                await api(`/agents/${task.assigned_to}/stop`, { method: 'POST' });
+                showNotification('Task stopped');
+                loadTasks();
+                loadWorkers();
+            }
         }
 
         async function cancelTask(taskId) {
             await api(`/tasks/${taskId}/cancel`, { method: 'POST' });
+            showNotification('Task cancelled');
             loadTasks();
         }
 
         async function retryTask(taskId) {
             const result = await api(`/tasks/${taskId}/retry`, { method: 'POST' });
-            if (result.success) {
-                showNotification(`Task retried: ${result.new_task.id}`);
+            if (result?.success) {
+                showNotification('Task retrying');
                 loadTasks();
             }
         }
 
-        async function runTaskNow(taskId) {
-            try {
-                const result = await api(`/tasks/${taskId}/run`, { method: 'POST' });
-                if (result.success) {
-                    showNotification(`Agent spawned for task ${taskId}`);
-                    loadTasks();
-                    loadAgents();
-                }
-            } catch (e) {
-                showNotification(`Failed to run task: ${e.message}`, 'error');
-            }
-        }
-
-        function showNotification(message, type = 'success') {
-            const eventsDiv = document.getElementById('events-list');
-            if (eventsDiv.querySelector('.text-gray-500')) {
-                eventsDiv.innerHTML = '';
-            }
+        function openRetryModal(taskId) {
+            const task = allTasks.find(t => t.id === taskId);
+            if (!task) return;
             
-            const color = type === 'error' ? 'text-red-400' : 'text-green-400';
-            const time = new Date().toLocaleTimeString();
-            const html = `<div class="fade-in text-xs">
-                <span class="text-gray-500">${time}</span>
-                <span class="${color}">${message}</span>
-            </div>`;
-            eventsDiv.insertAdjacentHTML('afterbegin', html);
-        }
-
-        async function viewLogs(project) {
-            document.getElementById('log-agent-select').value = project;
-            await selectAgent();
-            
-            // Auto-enable live streaming if agent is working
-            const agents = await api('/agents');
-            const agent = agents.find(a => a.project === project);
-            if (agent && agent.status === 'working' && !isLiveStreaming) {
-                toggleLive();
-            }
-            
-            // Re-render agents to show selection highlight
-            renderAgents(agents);
-        }
-        
-        function renderAgents(agents) {
-            // Re-render to update selection highlight
-            loadAgents();
-        }
-
-        let currentLogProject = null;
-        let isLiveStreaming = false;
-
-        async function selectAgent() {
-            const project = document.getElementById('log-agent-select').value;
-            const liveBtn = document.getElementById('live-toggle');
-            const nameSpan = document.getElementById('current-agent-name');
-            
-            // Unsubscribe from previous
-            if (currentLogProject && isLiveStreaming) {
-                ws.send(JSON.stringify({ command: 'unsubscribe', project: currentLogProject }));
-            }
-            
-            currentLogProject = project;
-            isLiveStreaming = false;
-            liveBtn.classList.add('hidden');
-            liveBtn.classList.remove('bg-green-600');
-            liveBtn.classList.add('bg-gray-600');
-            liveBtn.textContent = '○ Live';
-            
-            if (project) {
-                nameSpan.textContent = project;
-                loadAgentLogs();
-                liveBtn.classList.remove('hidden');
-            } else {
-                nameSpan.textContent = '';
-                document.getElementById('agent-logs').innerHTML = '<div class="text-gray-500 text-sm">Click on an agent above to view output</div>';
-            }
-        }
-
-        function toggleLive() {
-            const liveBtn = document.getElementById('live-toggle');
-            
-            if (!currentLogProject) return;
-            
-            if (isLiveStreaming) {
-                // Stop live streaming
-                ws.send(JSON.stringify({ command: 'unsubscribe', project: currentLogProject }));
-                isLiveStreaming = false;
-                liveBtn.classList.remove('bg-green-600');
-                liveBtn.classList.add('bg-gray-600');
-                liveBtn.textContent = '○ Live';
-            } else {
-                // Start live streaming
-                ws.send(JSON.stringify({ command: 'subscribe', project: currentLogProject }));
-                isLiveStreaming = true;
-                liveBtn.classList.add('bg-green-600');
-                liveBtn.classList.remove('bg-gray-600');
-                liveBtn.textContent = '● Live';
-            }
-        }
-
-        async function executeCommand() {
-            const input = document.getElementById('command-input');
-            const output = document.getElementById('command-output');
-            const cmd = input.value.trim();
-            
-            if (!cmd) return;
-            
-            output.textContent = 'Executing...';
-            
-            try {
-                const parts = cmd.split(' ');
-                const action = parts[0].toLowerCase();
-                
-                if (action === 'spawn' && parts[1]) {
-                    const task = parts.slice(2).join(' ') || null;
-                    const result = await api('/agents/spawn', {
-                        method: 'POST',
-                        body: JSON.stringify({ project: parts[1], task }),
-                    });
-                    output.textContent = result.success ? `Spawned agent for ${parts[1]}` : 'Failed';
-                } else if (action === 'stop' && parts[1]) {
-                    await api(`/agents/${parts[1]}/stop`, { method: 'POST' });
-                    output.textContent = `Stopped ${parts[1]}`;
-                } else if (action === 'add' && parts[1] === 'task' && parts[2]) {
-                    const result = await api('/tasks', {
-                        method: 'POST',
-                        body: JSON.stringify({ 
-                            project: parts[2], 
-                            description: parts.slice(3).join(' '),
-                            priority: 'normal',
-                        }),
-                    });
-                    output.textContent = result.success ? `Created task ${result.task.id}` : 'Failed';
-                } else if (action === 'status') {
-                    const status = await api('/status');
-                    output.textContent = JSON.stringify(status, null, 2);
-                } else {
-                    output.textContent = 'Unknown command. Try: spawn <project>, stop <project>, add task <project> <description>, status';
-                }
-            } catch (e) {
-                output.textContent = `Error: ${e.message}`;
-            }
-            
-            input.value = '';
-            loadAgents();
-            loadTasks();
-        }
-
-        // Modals
-        function openSpawnModal() {
-            document.getElementById('spawn-modal').classList.remove('hidden');
-            document.getElementById('spawn-modal').classList.add('flex');
-            document.getElementById('spawn-task').value = '';
-        }
-
-        function openSpawnModalFor(project) {
-            openSpawnModal();
-            document.getElementById('spawn-project').value = project;
-        }
-
-        function closeSpawnModal() {
-            document.getElementById('spawn-modal').classList.add('hidden');
-            document.getElementById('spawn-modal').classList.remove('flex');
-        }
-
-        function openTaskModal() {
-            document.getElementById('task-modal').classList.remove('hidden');
-            document.getElementById('task-modal').classList.add('flex');
-            document.getElementById('task-description').value = '';
-        }
-
-        function closeTaskModal() {
-            document.getElementById('task-modal').classList.add('hidden');
-            document.getElementById('task-modal').classList.remove('flex');
-        }
-
-        function clearEvents() {
-            document.getElementById('events-list').innerHTML = '<div class="text-gray-500 text-sm">Waiting for events...</div>';
-        }
-
-        // Retry functions
-        async function retryAgent(project) {
-            const result = await api(`/agents/${project}/retry`, { method: 'POST' });
-            if (result.success) {
-                loadAgents();
-            }
-        }
-
-        function openRetryModalFor(project, task, error) {
-            document.getElementById('retry-project').value = project;
-            document.getElementById('retry-task').value = task || '';
-            document.getElementById('retry-error').textContent = error || 'Unknown error';
+            retryTaskId = taskId;
+            document.getElementById('retry-description').value = task.description;
+            document.getElementById('retry-error').textContent = task.error || '';
             document.getElementById('retry-modal').classList.remove('hidden');
             document.getElementById('retry-modal').classList.add('flex');
         }
 
         function closeRetryModal() {
             document.getElementById('retry-modal').classList.add('hidden');
-            document.getElementById('retry-modal').classList.remove('flex');
+            retryTaskId = null;
         }
 
         async function submitRetry() {
-            const project = document.getElementById('retry-project').value;
-            const task = document.getElementById('retry-task').value;
+            if (!retryTaskId) return;
             
-            const result = await api(`/agents/${project}/retry`, {
+            const description = document.getElementById('retry-description').value;
+            const result = await api(`/tasks/${retryTaskId}/retry`, {
                 method: 'POST',
-                body: JSON.stringify({ task: task || null }),
+                body: JSON.stringify({ description })
             });
             
-            if (result.success) {
+            if (result?.success) {
+                showNotification('Task retrying');
                 closeRetryModal();
-                loadAgents();
+                loadTasks();
             }
         }
 
-        // Initialize
-        document.addEventListener('DOMContentLoaded', async () => {
-            // Check if we have a valid token
-            if (authToken) {
-                try {
-                    const response = await fetch('/status', {
-                        headers: getAuthHeaders()
-                    });
-                    if (response.ok) {
-                        loadAll();
-                        connectWebSocket();
-                    } else {
-                        showAuthModal();
-                    }
-                } catch (e) {
-                    showAuthModal();
+        async function selectTask(taskId) {
+            currentTaskId = taskId;
+            renderTasks();
+            
+            const task = allTasks.find(t => t.id === taskId);
+            if (!task) return;
+            
+            document.getElementById('current-task-name').textContent = `${task.project}: ${task.description.slice(0, 30)}...`;
+            
+            // If running, enable live streaming
+            if (task.status === 'in_progress' && task.assigned_to) {
+                document.getElementById('live-toggle').classList.remove('hidden');
+                if (!isLiveStreaming) {
+                    toggleLive();
                 }
+                // Subscribe to agent output
+                ws?.send(JSON.stringify({ command: 'subscribe', project: task.assigned_to }));
             } else {
-                showAuthModal();
+                // Load completed output
+                viewOutput(taskId);
+            }
+        }
+
+        async function viewOutput(taskId) {
+            const result = await api(`/tasks/${taskId}/output`);
+            const panel = document.getElementById('output-panel');
+            
+            if (result?.output) {
+                panel.innerHTML = `<pre class="text-xs text-gray-300 whitespace-pre-wrap">${result.output}</pre>`;
+            } else {
+                panel.innerHTML = '<div class="text-gray-500 text-sm">No output captured</div>';
+            }
+        }
+
+        function toggleLive() {
+            const btn = document.getElementById('live-toggle');
+            isLiveStreaming = !isLiveStreaming;
+            
+            if (isLiveStreaming) {
+                btn.className = 'text-xs bg-green-600 hover:bg-green-700 px-2 py-1 rounded';
+                btn.textContent = '● Live';
+            } else {
+                btn.className = 'text-xs bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded';
+                btn.textContent = '○ Live';
+            }
+        }
+
+        async function loadWorkers() {
+            const agents = await api('/agents');
+            if (!agents) return;
+            
+            allWorkers = agents;
+            renderWorkers();
+            document.getElementById('stat-running').textContent = agents.filter(a => a.status === 'working').length;
+        }
+
+        function renderWorkers() {
+            const container = document.getElementById('workers-list');
+            const active = allWorkers.filter(w => w.status === 'working');
+            
+            if (active.length === 0) {
+                container.innerHTML = '<div class="text-gray-500 text-sm">No active workers</div>';
+                return;
+            }
+
+            container.innerHTML = active.map(w => `
+                <div class="bg-gray-700 rounded p-2">
+                    <div class="flex justify-between items-center">
+                        <span class="font-medium text-sm">${w.project}</span>
+                        <span class="text-green-400 text-xs">PID: ${w.pid}</span>
+                    </div>
+                    <div class="text-gray-400 text-xs truncate mt-1">${w.task || 'No task'}</div>
+                    <button onclick="stopWorker('${w.project}')" class="text-xs bg-red-600 hover:bg-red-700 px-2 py-1 rounded mt-2">Stop</button>
+                </div>
+            `).join('');
+        }
+
+        async function stopWorker(project) {
+            await api(`/agents/${project}/stop`, { method: 'POST' });
+            showNotification('Worker stopped');
+            loadWorkers();
+            loadTasks();
+        }
+
+        function updateStats() {
+            const stats = {
+                pending: allTasks.filter(t => t.status === 'pending').length,
+                running: allTasks.filter(t => t.status === 'in_progress').length,
+                completed: allTasks.filter(t => t.status === 'completed').length,
+                failed: allTasks.filter(t => t.status === 'failed').length,
+            };
+            
+            document.getElementById('stat-pending').textContent = stats.pending;
+            document.getElementById('stat-running').textContent = stats.running;
+            document.getElementById('stat-completed').textContent = stats.completed;
+            document.getElementById('stat-failed').textContent = stats.failed;
+        }
+
+        async function loadPendingReviews() {
+            const reviews = await api('/tasks/pending-review');
+            const panel = document.getElementById('review-panel');
+            const list = document.getElementById('review-list');
+            
+            if (!reviews || reviews.length === 0) {
+                panel.classList.add('hidden');
+                return;
             }
             
-            // Auto-refresh every 10 seconds
-            setInterval(() => {
-                if (authToken) {
-                    loadStatus();
-                    loadAgents();
-                    loadTasks();
-                }
-            }, 10000);
-            
-            // Handle Enter key in auth modal
-            document.getElementById('auth-token').addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') submitAuth();
+            panel.classList.remove('hidden');
+            list.innerHTML = reviews.map(t => `
+                <div class="bg-yellow-800 rounded p-2">
+                    <div class="text-sm font-medium">${t.project}</div>
+                    <div class="text-xs text-yellow-200 mt-1">${t.review_prompt || t.description}</div>
+                    <div class="flex gap-2 mt-2">
+                        <button onclick="approveTask('${t.id}')" class="text-xs bg-green-600 hover:bg-green-700 px-2 py-1 rounded">Approve</button>
+                        <button onclick="rejectTask('${t.id}')" class="text-xs bg-red-600 hover:bg-red-700 px-2 py-1 rounded">Reject</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function approveTask(taskId) {
+            await api(`/tasks/${taskId}/review`, {
+                method: 'POST',
+                body: JSON.stringify({ approved: true })
             });
+            showNotification('Task approved');
+            loadTasks();
+        }
+
+        async function rejectTask(taskId) {
+            const comment = prompt('Reason for rejection (optional):');
+            await api(`/tasks/${taskId}/review`, {
+                method: 'POST',
+                body: JSON.stringify({ approved: false, comment })
+            });
+            showNotification('Task rejected');
+            loadTasks();
+        }
+
+        function openTaskModal() {
+            document.getElementById('task-modal').classList.remove('hidden');
+            document.getElementById('task-modal').classList.add('flex');
+            
+            // Populate project dropdown
+            const select = document.getElementById('task-project');
+            select.innerHTML = '';
+            
+            const projects = [...new Set(allTasks.map(t => t.project))];
+            projects.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p;
+                opt.textContent = p;
+                select.appendChild(opt);
+            });
+            
+            if (currentProject !== 'all') {
+                select.value = currentProject;
+            }
+        }
+
+        function closeTaskModal() {
+            document.getElementById('task-modal').classList.add('hidden');
+        }
+
+        async function submitTask() {
+            const project = document.getElementById('task-project').value;
+            const description = document.getElementById('task-description').value;
+            const priority = document.getElementById('task-priority').value;
+            const requiresReview = document.getElementById('task-review').checked;
+            
+            if (!project || !description) {
+                showNotification('Please fill in all fields');
+                return;
+            }
+
+            const result = await api('/tasks', {
+                method: 'POST',
+                body: JSON.stringify({ project, description, priority, requires_review: requiresReview })
+            });
+
+            if (result?.success) {
+                showNotification('Task added');
+                closeTaskModal();
+                document.getElementById('task-description').value = '';
+                loadTasks();
+            }
+        }
+
+        function connectWebSocket() {
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
+            
+            ws.onopen = () => {
+                document.getElementById('ws-indicator').className = 'w-2 h-2 rounded-full bg-green-500';
+                document.getElementById('ws-status').textContent = 'Connected';
+            };
+            
+            ws.onclose = () => {
+                document.getElementById('ws-indicator').className = 'w-2 h-2 rounded-full bg-red-500';
+                document.getElementById('ws-status').textContent = 'Disconnected';
+                setTimeout(connectWebSocket, 3000);
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                handleEvent(data);
+            };
+        }
+
+        function handleEvent(event) {
+            // Handle agent output streaming
+            if (event.type === 'agent.output') {
+                if (isLiveStreaming) {
+                    appendOutput(event.content);
+                }
+                return;
+            }
+            
+            // Add to activity log
+            if (event.type && event.type !== 'ping' && event.type !== 'pong') {
+                addActivity(event);
+            }
+            
+            // Refresh data on relevant events
+            if (event.type?.startsWith('task.') || event.type?.startsWith('agent.')) {
+                loadTasks();
+                loadWorkers();
+            }
+        }
+
+        function appendOutput(content) {
+            const panel = document.getElementById('output-panel');
+            let pre = panel.querySelector('pre');
+            
+            if (!pre) {
+                panel.innerHTML = '<pre class="text-xs text-gray-300 whitespace-pre-wrap"></pre>';
+                pre = panel.querySelector('pre');
+            }
+            
+            pre.textContent += content;
+            panel.scrollTop = panel.scrollHeight;
+        }
+
+        function addActivity(event) {
+            const container = document.getElementById('events-list');
+            
+            // Remove placeholder
+            if (container.querySelector('.text-gray-500')) {
+                container.innerHTML = '';
+            }
+            
+            const div = document.createElement('div');
+            div.className = 'text-xs py-1 border-b border-gray-700';
+            
+            const time = new Date().toLocaleTimeString();
+            div.innerHTML = `<span class="text-gray-500">${time}</span> <span class="text-gray-300">${event.type || 'event'}</span>`;
+            
+            container.insertBefore(div, container.firstChild);
+            
+            // Limit to 50 items
+            while (container.children.length > 50) {
+                container.removeChild(container.lastChild);
+            }
+        }
+
+        function showNotification(message) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.remove('hidden');
+            setTimeout(() => toast.classList.add('hidden'), 3000);
+        }
+
+        async function loadAll() {
+            await Promise.all([loadProjects(), loadTasks(), loadWorkers()]);
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            if (!authToken) {
+                showAuthModal();
+            } else {
+                loadAll();
+                connectWebSocket();
+                
+                // Auto-refresh every 10 seconds
+                setInterval(loadAll, 10000);
+            }
         });
     </script>
 </body>
