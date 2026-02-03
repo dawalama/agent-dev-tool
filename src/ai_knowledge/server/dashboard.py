@@ -279,7 +279,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             if (!projects) return;
             
             const container = document.getElementById('project-tabs');
-            container.innerHTML = '<button onclick="selectProject(\'all\')" class="px-3 py-1 rounded text-sm bg-blue-600" id="project-all">All</button>';
+            container.innerHTML = `<button onclick="selectProject('all')" class="px-3 py-1 rounded text-sm bg-blue-600" id="project-all">All</button>`;
             
             projects.forEach(p => {
                 const btn = document.createElement('button');
@@ -715,21 +715,41 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
         }
 
         async function loadAll() {
-            await Promise.all([loadProjects(), loadTasks(), loadWorkers()]);
+            const results = await Promise.all([loadProjects(), loadTasks(), loadWorkers()]);
+            // If all returned null/empty, token might be invalid
+            if (!results.some(r => r !== null)) {
+                console.log('All API calls failed, showing auth');
+            }
         }
 
         // Initialize
-        document.addEventListener('DOMContentLoaded', () => {
+        (async function init() {
+            console.log('Dashboard initializing, token:', authToken ? 'present' : 'missing');
+            
             if (!authToken) {
                 showAuthModal();
-            } else {
-                loadAll();
-                connectWebSocket();
-                
-                // Auto-refresh every 10 seconds
-                setInterval(loadAll, 10000);
+                return;
             }
-        });
+            
+            // Test if token is valid
+            try {
+                const authResp = await fetch('/status', { headers: getAuthHeaders() });
+                console.log('Auth test response:', authResp.status);
+                if (authResp.status === 401 || authResp.status === 403) {
+                    showAuthModal();
+                    return;
+                }
+            } catch (e) {
+                console.error('Auth test failed:', e);
+            }
+            
+            console.log('Loading data and connecting WebSocket');
+            loadAll();
+            connectWebSocket();
+            
+            // Auto-refresh every 10 seconds
+            setInterval(loadAll, 10000);
+        })();
     </script>
 </body>
 </html>

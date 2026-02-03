@@ -72,6 +72,7 @@ class RateLimiter:
 PUBLIC_PATHS = {
     "/",           # Dashboard (will check auth via JS)
     "/health",     # Health check
+    "/favicon.ico", # Browser favicon request
     "/docs",       # OpenAPI docs
     "/openapi.json",
     "/redoc",
